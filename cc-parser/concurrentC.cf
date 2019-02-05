@@ -70,7 +70,7 @@ Tlong.        Type_specifier ::= "long";
 -- Tdouble.      Type_specifier ::= "double";
 Tsigned.      Type_specifier ::= "signed";
 Tunsigned.    Type_specifier ::= "unsigned";
--- Tstruct.      Type_specifier ::= Struct_or_union_spec;
+Tstruct.      Type_specifier ::= Struct_or_union_spec;
 -- Tenum.        Type_specifier ::= Enum_specifier;
 -- Tname.        Type_specifier ::= "Typedef_name";
 Tclock.       Type_specifier ::= "clock";
@@ -89,16 +89,16 @@ NoOptim.  Type_qualifier ::= "volatile";
 
 separator nonempty Type_qualifier "";
 
--- Tag.      Struct_or_union_spec ::= Struct_or_union CIdent "{" [Struct_dec] "}" ;
--- Unique.   Struct_or_union_spec ::= Struct_or_union "{" [Struct_dec] "}";
--- TagType.  Struct_or_union_spec ::= Struct_or_union CIdent ;
+Tag.      Struct_or_union_spec ::= Struct_or_union CIdent "{" [Struct_dec] "}" ;
+Unique.   Struct_or_union_spec ::= Struct_or_union "{" [Struct_dec] "}";
+TagType.  Struct_or_union_spec ::= Struct_or_union CIdent ;
 
--- Struct.   Struct_or_union ::= "struct";
+Struct.   Struct_or_union ::= "struct";
 -- Union.    Struct_or_union ::= "union";
 
--- Structen. Struct_dec ::= [Spec_qual] [Struct_declarator] ";" ;
+Structen. Struct_dec ::= [Spec_qual] [Struct_declarator] ";" ;
 
--- separator nonempty Struct_dec "";
+separator nonempty Struct_dec "";
 
 TypeSpec.  Spec_qual ::= Type_specifier;
 QualSpec.  Spec_qual ::= Type_qualifier;

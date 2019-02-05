@@ -653,6 +653,7 @@ object Main {
     case _ : java.lang.StackOverflowError =>
       printError("stack overflow", GlobalParameters.get.format)
     case t : Exception =>
+      t.printStackTrace
       printError(t.getMessage, GlobalParameters.get.format)
   }
 

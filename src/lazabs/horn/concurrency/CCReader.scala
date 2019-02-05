@@ -32,18 +32,16 @@ package lazabs.horn.concurrency
 
 import ap.basetypes.IdealInt
 import ap.parser._
-import ap.theories.ModuloArithmetic
+import ap.theories.{ADT, ModuloArithmetic}
 import ap.types.MonoSortedPredicate
 import ap.util.Combinatorics
+import lazabs.horn.bottomup.HornClauses
+import lazabs.horn.preprocessor.HornPreprocessor
 
 import concurrentC._
 import concurrentC.Absyn._
 
-import lazabs.horn.bottomup.HornClauses
-import lazabs.horn.preprocessor.HornPreprocessor
-
-import scala.collection.mutable.{HashMap => MHashMap, ArrayBuffer, Buffer,
-                                 Stack, LinkedHashSet}
+import scala.collection.mutable.{ArrayBuffer, Buffer, LinkedHashSet, Stack, HashMap => MHashMap}
 
 object CCReader {
 
@@ -144,6 +142,9 @@ object CCReader {
     val UNSIGNED_RANGE : IdealInt = IdealInt("FFFFFFFFFFFFFFFF", 16) // 64bit
     val isUnsigned : Boolean = true
   }
+  private case class CCStruct(adt: ADT, name: String, fields: List[(String, CCType)]) extends CCType {
+    override def toString : String = "struct " + name //maybe other stuff
+  }
   private case object CCClock extends CCType {
     override def toString : String = "clock"
   }
@@ -199,10 +200,14 @@ class CCReader private (prog : Program,
   private implicit def toRichType(typ : CCType) = new Object {
     import ModuloArithmetic._
 
-    def toSort : Sort = arithmeticMode match {
+    // add cases for struct below?
+    def toSort : Sort = typ match {
+      case CCStruct(adt, _, _) => adt.sorts.head
+      case CCDuration => Sort.Nat
+      case CCClock => Sort.Integer
+      case typ : CCArithType => arithmeticMode match {
       case ArithmeticMode.Mathematical => typ match {
         case typ : CCArithType if typ.isUnsigned  => Sort.Nat
-        case CCDuration                           => Sort.Nat
         case _                                    => Sort.Integer
       }
       case ArithmeticMode.ILP32 => typ match {
@@ -212,7 +217,6 @@ class CCReader private (prog : Program,
         case CCULong    => UnsignedBVSort(32)
         case CCLongLong => SignedBVSort  (64)
         case CCULongLong=> UnsignedBVSort(64)
-        case CCDuration => Sort.Nat
         case _          => Sort.Integer
       }
       case ArithmeticMode.LP64 => typ match {
@@ -222,7 +226,6 @@ class CCReader private (prog : Program,
         case CCULong    => UnsignedBVSort(64)
         case CCLongLong => SignedBVSort  (64)
         case CCULongLong=> UnsignedBVSort(64)
-        case CCDuration => Sort.Nat
         case _          => Sort.Integer
       }
       case ArithmeticMode.LLP64 => typ match {
@@ -232,10 +235,9 @@ class CCReader private (prog : Program,
         case CCULong    => UnsignedBVSort(32)
         case CCLongLong => SignedBVSort  (64)
         case CCULongLong=> UnsignedBVSort(64)
-        case CCDuration => Sort.Nat
         case _          => Sort.Integer
       }
-    }
+    }}
 
     def rangePred(t : ITerm) : IFormula =
       toSort membershipConstraint t
@@ -731,7 +733,7 @@ class CCReader private (prog : Program,
       }
     }
     case _ : NoDeclarator =>
-      // nothing
+      // nothing - add struct
   }
 
   private def processHints(hints : Seq[Abs_hint]) : Unit =
@@ -831,6 +833,8 @@ class CCReader private (prog : Program,
               typ = CCLongLong
             case _ : Tlong if (typ == CCULong) =>
               typ = CCULongLong
+            case _ : Tstruct => //added
+              typ = CCStruct(null,"",List()) //go through the fields and find out the types before generating the ADT
             case _ : Tclock => {
               if (!useTime)
                 throw NeedsTimeException
@@ -1062,6 +1066,7 @@ class CCReader private (prog : Program,
 
     private def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
+      case exp : Eselect => exp.cident_ // what here? exp.exp_.cident_ is s, exp.cident_ is a, we are assigning to s.a
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1070,6 +1075,7 @@ class CCReader private (prog : Program,
 
     private def isClockVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar => getValue(exp.cident_).typ == CCClock
+      case exp : Eselect => false //added case - zafer
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1078,6 +1084,7 @@ class CCReader private (prog : Program,
 
     private def isDurationVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar => getValue(exp.cident_).typ == CCDuration
+      case exp : Eselect => false //added case - zafer
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1924,7 +1931,7 @@ class CCReader private (prog : Program,
         val condSymex = Symex(entry)
         val cond = (condSymex eval stm.exp_).toFormula
         condSymex.outputITEClauses(cond, first, exit)
-        withinLoop(entry, exit) {
+        withinLoop(entry, exit) { //continue,break handling
           translate(stm.stm_, first, entry)
         }
       }

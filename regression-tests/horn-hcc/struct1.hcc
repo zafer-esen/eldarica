@@ -1,0 +1,10 @@
+struct S{
+       int a;
+       int b;
+};
+
+thread A {
+    struct S s;
+    s.a = 10;
+    s.b = 42;
+}
