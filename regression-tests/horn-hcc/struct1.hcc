@@ -1,9 +1,15 @@
+int c;
 struct S{
        int a;
-       int b;
+       unsigned long b;
+};
+struct S2{
+       int c;
+       int d;
 };
 
 thread A {
+    c = 3;
     struct S s;
     s.a = 10;
     s.b = 42;

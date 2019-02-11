@@ -143,7 +143,7 @@ object CCReader {
     val isUnsigned : Boolean = true
   }
   private case class CCStruct(adt: ADT, name: String, fields: List[(String, CCType)]) extends CCType {
-    override def toString : String = "struct " + name //maybe other stuff
+    override def toString : String = "struct " + name + ": (" +fields.mkString + ")"
   }
   private case object CCClock extends CCType {
     override def toString : String = "clock"
@@ -200,7 +200,6 @@ class CCReader private (prog : Program,
   private implicit def toRichType(typ : CCType) = new Object {
     import ModuloArithmetic._
 
-    // add cases for struct below?
     def toSort : Sort = typ match {
       case CCStruct(adt, _, _) => adt.sorts.head
       case CCDuration => Sort.Nat
@@ -369,6 +368,7 @@ class CCReader private (prog : Program,
 
   private val functionDefs  = new MHashMap[String, Function_def]
   private val functionDecls = new MHashMap[String, (Direct_declarator, CCType)]
+  private val structDefs    = new MHashMap[String, CCStruct]
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -732,8 +732,12 @@ class CCReader private (prog : Program,
         }
       }
     }
-    case _ : NoDeclarator =>
+    case nodecl : NoDeclarator => {
+      //val decl = dec
+      val typ = getType(nodecl.listdeclaration_specifier_)
+      println(typ)
       // nothing - add struct
+    }
   }
 
   private def processHints(hints : Seq[Abs_hint]) : Unit =
@@ -785,6 +789,12 @@ class CCReader private (prog : Program,
             variableHints(variableHints.size - 1) = hintEls
           }
 
+  // TODO: review below function
+  private def getName(decl : Struct_dec) : String = decl match {
+    case decl : Structen => getName(
+      decl.liststruct_declarator_.iterator.next().asInstanceOf[Decl].declarator_)
+  }
+
   private def getName(decl : Declarator) : String = decl match {
     case decl : NoPointer => getName(decl.direct_declarator_)
   }
@@ -807,6 +817,13 @@ class CCReader private (prog : Program,
       getType(for (qual <- name.listspec_qual_.iterator;
                    if (qual.isInstanceOf[TypeSpec]))
               yield qual.asInstanceOf[TypeSpec].type_specifier_)
+  }
+
+  private def getType(name : Struct_dec) : CCType = name match {
+    case name : Structen =>
+      getType(for (qual <- name.listspec_qual_.iterator;
+                   if (qual.isInstanceOf[TypeSpec]))
+        yield qual.asInstanceOf[TypeSpec].type_specifier_)
   }
 
   private def getType(specs : Iterator[Type_specifier]) : CCType = {
@@ -833,8 +850,54 @@ class CCReader private (prog : Program,
               typ = CCLongLong
             case _ : Tlong if (typ == CCULong) =>
               typ = CCULongLong
-            case _ : Tstruct => //added
-              typ = CCStruct(null,"",List()) //go through the fields and find out the types before generating the ADT
+            case structOrUnion : Tstruct => //does not currently support union
+
+              /* Three possibilities:
+                1. Tag.      Struct_or_union_spec ::= Struct_or_union CIdent "{" [Struct_dec] "}" ;
+                2. Unique.   Struct_or_union_spec ::= Struct_or_union "{" [Struct_dec] "}";
+                3. TagType.  Struct_or_union_spec ::= Struct_or_union CIdent ;
+
+                1. Tag     : Struct definition: introduces the new type struct name and defines its meaning
+                2. Unique  : means that this is an anonymous struct, and must be defined inside another struct.
+                3. TagType : Two possibilities:
+                             a) If used on a line of its own as in struct name ;, declares but doesn't define the struct
+                               name (see forward declaration).
+                             b) In other contexts, names the previously-declared struct.
+               */
+
+              structOrUnion.struct_or_union_spec_ match {
+                case spec : Tag => // struct definition
+                  val structName = spec.cident_
+                  if (structDefs contains structName)
+                    throw new TranslationException(
+                      "struct " + structName + " is already declared")
+
+                  val fields = spec.liststruct_dec_
+                  val fieldList : List[(String, CCType)] = (for ( field <- fields ) yield
+                    (getName(field.asInstanceOf[Structen]),
+                      getType(field.asInstanceOf[Structen]))).toList  // .asInstanceOf[ArrayBuffer[String]].toList
+
+                  val ADTFieldList : List[(String, ap.theories.ADT.OtherSort)] =
+                    for((fieldName, fieldType) <- fieldList)
+                      yield (fieldName, ADT.OtherSort(Sort.Integer)) //is making every parameter Integer type ok?
+
+                  val structADT =
+                    new ADT(List("struct"), List((structName, ADT.CtorSignature(ADTFieldList, ADT.ADTSort(0)))))
+
+                  val newStruct = CCStruct(structADT, structName, fieldList)
+                  structDefs += (structName -> newStruct)
+                  typ = newStruct
+                case spec : Unique => // anonymous struct (i.e. a definition inside another struct)
+                  println("Unique types are not supported yet") // TODO handle unique types
+                case spec : TagType => // if struct not defined yet, forward declaration; else, Type_specifier
+                  val structName = spec.cident_
+                  structDefs.get(structName) match {
+                    case Some(struct) => typ = struct
+                    case None => throw new TranslationException( // TODO handle forward declarations here, currently not supported
+                      "struct " + structName + " is used without being defined first! (Forward declarations " +
+                        "are not supported yet.)")
+                  }
+              }
             case _ : Tclock => {
               if (!useTime)
                 throw NeedsTimeException
@@ -1066,7 +1129,7 @@ class CCReader private (prog : Program,
 
     private def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
-      case exp : Eselect => exp.cident_ // what here? exp.exp_.cident_ is s, exp.cident_ is a, we are assigning to s.a
+      case exp : Eselect => exp.cident_ // what here? exp.exp_.cident_ is s, exp.cident_ is a
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1160,7 +1223,7 @@ class CCReader private (prog : Program,
       case exp : Eassign if (exp.assignment_op_.isInstanceOf[Assign]) => {
         evalHelp(exp.exp_2)
         maybeOutputClause
-        setValue(asLValue(exp.exp_1), topVal)
+        setValue(asLValue(exp.exp_1), topVal) //TODO deal with select here or inside?
       }
       case exp : Eassign => {
         evalHelp(exp.exp_1)
