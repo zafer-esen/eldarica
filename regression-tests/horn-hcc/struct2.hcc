@@ -1,0 +1,14 @@
+struct S2{
+       int c;
+       int d;
+};
+struct S{
+       int a;
+       struct S2 b;
+};
+
+thread A {
+    struct S s;
+    s.b.c = 42;
+    assert(s.b.c== 42);
+}

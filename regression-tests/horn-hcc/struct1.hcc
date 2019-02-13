@@ -1,4 +1,5 @@
 int c;
+int d;
 struct S{
        int a;
        unsigned long b;
@@ -9,8 +10,14 @@ struct S2{
 };
 
 thread A {
-    c = 3;
     struct S s;
     s.a = 10;
+    d = s.a++;
     s.b = 42;
+    c = s.a + s.b;
+    int e = c++;
+    assert(d == 10);
+    assert(s.a == 11);
+    assert(c == 54);
+    assert(e == 53);
 }

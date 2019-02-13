@@ -1,20 +1,20 @@
 /**
  * Copyright (c) 2015-2018 Philipp Ruemmer. All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- * 
+ *
  * * Redistributions of source code must retain the above copyright notice, this
  *   list of conditions and the following disclaimer.
- * 
+ *
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- * 
+ *
  * * Neither the name of the authors nor the names of their
  *   contributors may be used to endorse or promote products derived from
  *   this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -74,7 +74,7 @@ object CCReader {
                                 entry : (parser) => T) : T = {
     val l = new Yylex(new ap.parser.Parser2InputAbsy.CRRemover2 (input))
     val p = new parser(l)
-    
+
     try { entry(p) } catch {
       case e : Exception =>
         throw new ParseException(
@@ -142,8 +142,21 @@ object CCReader {
     val UNSIGNED_RANGE : IdealInt = IdealInt("FFFFFFFFFFFFFFFF", 16) // 64bit
     val isUnsigned : Boolean = true
   }
-  private case class CCStruct(adt: ADT, name: String, fields: List[(String, CCType)]) extends CCType {
+  private trait Composite extends CCType {
+
+  }
+  private case class CCStruct(adt: ADT, name: String, fields: List[(String, CCType)])
+    extends CCType with Composite{
     override def toString : String = "struct " + name + ": (" +fields.mkString + ")"
+
+    def getFieldIndex(name: String) =  fields.indexWhere(_._1 == name)
+
+    def getADTSelector(ind: Int) = {
+      if(ind < 0)
+        throw new TranslationException(
+          "struct " + name + " does not contain field with index: " + ind)
+      adt.selectors(0)(ind)
+    }
   }
   private case object CCClock extends CCType {
     override def toString : String = "clock"
@@ -610,7 +623,7 @@ class CCReader private (prog : Program,
 
         processes += ((clauses.toList, ParametricEncoder.Singleton))
         clauses.clear
-        
+
         popLocalFrame
       }
       case None =>
@@ -652,7 +665,7 @@ class CCReader private (prog : Program,
             val name = getName(declarator)
             val directDecl =
               declarator.asInstanceOf[NoPointer].direct_declarator_
-  
+
             directDecl match {
               case _ : NewFuncDec /* | _ : OldFuncDef */ | _ : OldFuncDec =>
                 functionDecls.put(name, (directDecl, typ))
@@ -680,7 +693,7 @@ class CCReader private (prog : Program,
               }
             }
           }
-  
+
           case _ : InitDecl | _ : HintInitDecl => {
             val (declarator, initializer) = initDecl match {
               case initDecl : InitDecl =>
@@ -698,7 +711,7 @@ class CCReader private (prog : Program,
                 else
                   (values eval init.exp_, i(true))
             }
-  
+
             if (global) {
               globalVars += c
               globalVarTypes += typ
@@ -706,7 +719,7 @@ class CCReader private (prog : Program,
             } else {
               addLocalVar(c, typ)
             }
-  
+
             typ match {
               case CCClock =>
                 values addValue translateClockValue(initValue)
@@ -715,7 +728,7 @@ class CCReader private (prog : Program,
               case typ =>
                 values addValue (typ cast initValue)
             }
-  
+
             values addGuard initGuard
           }
         }
@@ -733,10 +746,7 @@ class CCReader private (prog : Program,
       }
     }
     case nodecl : NoDeclarator => {
-      //val decl = dec
-      val typ = getType(nodecl.listdeclaration_specifier_)
-      println(typ)
-      // nothing - add struct
+      getType(nodecl.listdeclaration_specifier_) // TODO: is calling getType here ok? this is done just to create struct
     }
   }
 
@@ -879,10 +889,11 @@ class CCReader private (prog : Program,
 
                   val ADTFieldList : List[(String, ap.theories.ADT.OtherSort)] =
                     for((fieldName, fieldType) <- fieldList)
-                      yield (fieldName, ADT.OtherSort(Sort.Integer)) //is making every parameter Integer type ok?
+                      yield (fieldName, ADT.OtherSort(fieldType.toSort))
 
                   val structADT =
-                    new ADT(List("struct"), List((structName, ADT.CtorSignature(ADTFieldList, ADT.ADTSort(0)))))
+                    new ADT(List("struct" + structName),
+                      List((structName, ADT.CtorSignature(ADTFieldList, ADT.ADTSort(0)))))
 
                   val newStruct = CCStruct(structADT, structName, fieldList)
                   structDefs += (structName -> newStruct)
@@ -1022,13 +1033,13 @@ class CCReader private (prog : Program,
 
       if (usingInitialPredicates) {
         import HornPreprocessor.VerifHintInitPred
-        
+
         // if the pushed value refers to other variables,
         // add initial predicates that relate the values of
         // temporary variables with the original variables
         //
         // TODO: this is currently not very effective ...
-        
+
         val varMapping =
           (for (d <- v.occurringConstants.iterator;
                 index = lookupVarNoException(d.name))
@@ -1120,6 +1131,12 @@ class CCReader private (prog : Program,
         touchedGlobalState || ind < globalVars.size || !freeFromGlobal(t)
     }
 
+    def getVarType (name: String) = {
+      val ind = lookupVar(name)
+      if (ind < globalVars.size) globalVarTypes(ind)
+      else localVarTypes(ind - globalVarTypes.size)
+    }
+
     def getValues : Seq[CCExpr] =
       values.toList
     def getValuesAsTerms : Seq[ITerm] =
@@ -1129,7 +1146,6 @@ class CCReader private (prog : Program,
 
     private def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
-      case exp : Eselect => exp.cident_ // what here? exp.exp_.cident_ is s, exp.cident_ is a
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1138,7 +1154,7 @@ class CCReader private (prog : Program,
 
     private def isClockVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar => getValue(exp.cident_).typ == CCClock
-      case exp : Eselect => false //added case - zafer
+      case exp : Eselect => false
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1221,9 +1237,39 @@ class CCReader private (prog : Program,
         setValue(asLValue(exp.exp_1), translateDurationValue(topVal))
       }
       case exp : Eassign if (exp.assignment_op_.isInstanceOf[Assign]) => {
-        evalHelp(exp.exp_2)
+        eval(exp.exp_2) //this put 42 in stack
         maybeOutputClause
-        setValue(asLValue(exp.exp_1), topVal) //TODO deal with select here or inside?
+        evalHelp(exp.exp_1) //this should prepare rhs recursively
+                // b(s) ---> c(b(s)) ---> S2
+
+        val (actualLHS, fields) = {
+          var lhs = exp.exp_1
+          var fields = List[String]()
+
+          while (lhs.isInstanceOf[Eselect]) {
+            fields = lhs.asInstanceOf[Eselect].cident_ :: fields
+            lhs = lhs.asInstanceOf[Eselect].exp_
+          }
+          (lhs, fields)
+        }
+        var rhs = topVal.toTerm //only if there is a select
+        val lhsString = asLValue(actualLHS)
+        val lhs = getValue(lhsString)
+        var curType = getVarType(lhsString)
+
+        for (field <- fields) {
+          val structType = curType.asInstanceOf[CCStruct]
+          val structADT = structType.adt
+          val ind = structType.getFieldIndex(field)
+          val ctorArgs =
+            for (n <- structType.fields.indices) yield {
+              if (n == ind) rhs
+              else structType.getADTSelector(n)(lhs.toTerm)
+            }
+          rhs = structADT.constructors.head(ctorArgs:_*)
+        }
+
+        setValue(lhsString, CCTerm(rhs, getVarType(lhsString)))
       }
       case exp : Eassign => {
         evalHelp(exp.exp_1)
@@ -1464,12 +1510,63 @@ class CCReader private (prog : Program,
         }
       }
 
-//      case exp : Eselect.     Exp16 ::= Exp16 "." Ident;
+      case exp : Eselect => { //Exp16 ::= Exp16 "." Ident;
+        val subexpr = eval(exp.exp_)
+        val field = exp.cident_
+        subexpr.typ match {
+          case structType: CCStruct => {
+            val ind = structType.getFieldIndex(field)
+            val fieldType = structType.fields(ind)._2
+            val sel = structType.getADTSelector(ind)
+            pushVal(CCTerm(sel(subexpr.toTerm), fieldType))
+          }
+          case _ =>
+            throw new TranslationException("Eselect is currently " +
+              "only implemented for structs")
+        }
+      }
 //      case exp : Epoint.      Exp16 ::= Exp16 "->" Ident;
       case exp : Epostinc => {
-        evalHelp(exp.exp_)
-        maybeOutputClause
-        setValue(asLValue(exp.exp_), topVal mapTerm (_ + 1))
+        exp.exp_ match {
+          case select: Eselect => {
+            val subexpr = eval(exp.exp_)
+            maybeOutputClause
+            val field = select.cident_
+            val (actualLHS, fields) = {
+              var lhs: Exp = select
+              var fields = List[String]()
+
+              while (lhs.isInstanceOf[Eselect]) {
+                fields = lhs.asInstanceOf[Eselect].cident_ :: fields
+                lhs = lhs.asInstanceOf[Eselect].exp_
+              }
+              (lhs, fields)
+            }
+            var rhs = subexpr.toTerm // mapTerm (_ + 1)
+            val lhsString = asLValue(actualLHS)
+            val lhs = getValue(lhsString)
+            val curType = getVarType(lhsString)
+
+            for (field <- fields) {
+              val structType = curType.asInstanceOf[CCStruct]
+              val structADT = structType.adt
+              val ind = structType.getFieldIndex(field)
+              val ctorArgs =
+                for (n <- structType.fields.indices) yield {
+                  if (n == ind) rhs + 1
+                  else structType.getADTSelector(n)(lhs.toTerm)
+                }
+              rhs = structADT.constructors.head(ctorArgs: _*)
+            }
+
+            pushVal(subexpr)
+            setValue(lhsString, CCTerm(rhs, curType))
+          }
+          case _ =>
+            evalHelp(exp.exp_)
+            maybeOutputClause
+            setValue(asLValue(exp.exp_), topVal mapTerm (_ + 1))
+        }
       }
       case exp : Epostdec => {
         evalHelp(exp.exp_)
@@ -2037,7 +2134,7 @@ class CCReader private (prog : Program,
         withinLoop(third, exit) {
           translate(body, second, third)
         }
-        
+
         stm match {
           case stm : SiterThree =>
             output(Clause(atom(first, allFormalVars),
