@@ -145,7 +145,6 @@ object CCReader {
   private case class CCStruct(adt: ADT, name: String, fields: List[(String, CCType)])
     extends CCType{
     override def toString : String = "struct " + name + ": (" +fields.mkString + ")"
-
     def getFieldIndex(name: String) =  fields.indexWhere(_._1 == name)
     def getFieldType(ind: Int) = fields(ind)._2
     def getADTSelector(ind: Int) = {
@@ -153,6 +152,13 @@ object CCReader {
         throw new TranslationException(
           "struct " + name + " does not contain field with index: " + ind)
       adt.selectors(0)(ind)
+    }
+  }
+  private object CCStruct{
+    private var anonStructCount = 0
+    def genAnonStructName: String = {
+      anonStructCount += 1
+      ".AS" + (anonStructCount - 1)
     }
   }
   private case object CCClock extends CCType {
@@ -858,20 +864,6 @@ class CCReader private (prog : Program,
             case _ : Tlong if (typ == CCULong) =>
               typ = CCULongLong
             case structOrUnion : Tstruct => //does not currently support union
-
-              /* Three possibilities:
-                1. Tag.      Struct_or_union_spec ::= Struct_or_union CIdent "{" [Struct_dec] "}" ;
-                2. Unique.   Struct_or_union_spec ::= Struct_or_union "{" [Struct_dec] "}";
-                3. TagType.  Struct_or_union_spec ::= Struct_or_union CIdent ;
-
-                1. Tag     : Struct definition: introduces the new type struct name and defines its meaning
-                2. Unique  : means that this is an anonymous struct, and must be defined inside another struct.
-                3. TagType : Two possibilities:
-                             a) If used on a line of its own as in struct name ;, declares but doesn't define the struct
-                               name (see forward declaration).
-                             b) In other contexts, names the previously-declared struct.
-               */
-
               structOrUnion.struct_or_union_spec_ match {
                 case spec : Tag => // struct definition
                   val structName = spec.cident_
@@ -895,8 +887,25 @@ class CCReader private (prog : Program,
                   val newStruct = CCStruct(structADT, structName, fieldList)
                   structDefs += (structName -> newStruct)
                   typ = newStruct
-                case spec : Unique => // anonymous struct (i.e. a definition inside another struct)
-                  println("Unique types are not supported yet") // TODO handle unique types
+                case spec : Unique => { // TODO refactor to reuse struct creation code
+                  val structName = CCStruct.genAnonStructName
+                  val fields = spec.liststruct_dec_
+                  val fieldList : List[(String, CCType)] = (for ( field <- fields ) yield
+                    (getName(field.asInstanceOf[Structen]),
+                      getType(field.asInstanceOf[Structen]))).toList  // .asInstanceOf[ArrayBuffer[String]].toList
+
+                  val ADTFieldList : List[(String, ap.theories.ADT.OtherSort)] =
+                    for((fieldName, fieldType) <- fieldList)
+                      yield (fieldName, ADT.OtherSort(fieldType.toSort))
+
+                  val structADT =
+                    new ADT(List("struct" + structName),
+                      List((structName, ADT.CtorSignature(ADTFieldList, ADT.ADTSort(0)))))
+
+                  val newStruct = CCStruct(structADT, structName, fieldList)
+                  structDefs += (structName -> newStruct)
+                  typ = newStruct
+                }
                 case spec : TagType => // if struct not defined yet, forward declaration; else, Type_specifier
                   val structName = spec.cident_
                   typ = structDefs.get(structName) match {
@@ -922,7 +931,6 @@ class CCReader private (prog : Program,
               typ = CCInt
             }
           }
-
     typ
   }
 
