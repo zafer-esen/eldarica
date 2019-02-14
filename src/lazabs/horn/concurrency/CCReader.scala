@@ -1,20 +1,20 @@
 /**
- * Copyright (c) 2015-2018 Philipp Ruemmer. All rights reserved.
- *
+ * Copyright (c) 2015-2019 Philipp Ruemmer. All rights reserved.
+ * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- *
+ * 
  * * Redistributions of source code must retain the above copyright notice, this
  *   list of conditions and the following disclaimer.
- *
+ * 
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- *
+ * 
  * * Neither the name of the authors nor the names of their
  *   contributors may be used to endorse or promote products derived from
  *   this software without specific prior written permission.
- *
+ * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -41,7 +41,11 @@ import lazabs.horn.preprocessor.HornPreprocessor
 import concurrentC._
 import concurrentC.Absyn._
 
-import scala.collection.mutable.{ArrayBuffer, Buffer, LinkedHashSet, Stack, HashMap => MHashMap}
+import lazabs.horn.bottomup.HornClauses
+import lazabs.horn.preprocessor.HornPreprocessor
+
+import scala.collection.mutable.{HashMap => MHashMap, ArrayBuffer, Buffer,
+                                 Stack, LinkedHashSet}
 
 object CCReader {
 
@@ -73,8 +77,9 @@ object CCReader {
   private def parseWithEntry[T](input : java.io.Reader,
                                 entry : (parser) => T) : T = {
     val l = new Yylex(new ap.parser.Parser2InputAbsy.CRRemover2 (input))
-    val p = new parser(l)
-
+    val l2 = new TypedefReplacingLexer(l)
+    val p = new parser(l2)
+    
     try { entry(p) } catch {
       case e : Exception =>
         throw new ParseException(
@@ -216,43 +221,44 @@ class CCReader private (prog : Program,
   private implicit def toRichType(typ : CCType) = new Object {
     import ModuloArithmetic._
 
-    def toSort : Sort = typ match {
+    def toSort: Sort = typ match {
       case CCStruct(adt, _, _) => adt.sorts.head
       case CCDuration => Sort.Nat
       case CCClock => Sort.Integer
-      case typ : CCArithType => arithmeticMode match {
-      case ArithmeticMode.Mathematical => typ match {
-        case typ : CCArithType if typ.isUnsigned  => Sort.Nat
-        case _                                    => Sort.Integer
+      case typ: CCArithType => arithmeticMode match {
+        case ArithmeticMode.Mathematical => typ match {
+          case typ: CCArithType if typ.isUnsigned => Sort.Nat
+          case _ => Sort.Integer
+        }
+        case ArithmeticMode.ILP32 => typ match {
+          case CCInt => SignedBVSort(32)
+          case CCUInt => UnsignedBVSort(32)
+          case CCLong => SignedBVSort(32)
+          case CCULong => UnsignedBVSort(32)
+          case CCLongLong => SignedBVSort(64)
+          case CCULongLong => UnsignedBVSort(64)
+          case _ => Sort.Integer
+        }
+        case ArithmeticMode.LP64 => typ match {
+          case CCInt => SignedBVSort(32)
+          case CCUInt => UnsignedBVSort(32)
+          case CCLong => SignedBVSort(64)
+          case CCULong => UnsignedBVSort(64)
+          case CCLongLong => SignedBVSort(64)
+          case CCULongLong => UnsignedBVSort(64)
+          case _ => Sort.Integer
+        }
+        case ArithmeticMode.LLP64 => typ match {
+          case CCInt => SignedBVSort(32)
+          case CCUInt => UnsignedBVSort(32)
+          case CCLong => SignedBVSort(32)
+          case CCULong => UnsignedBVSort(32)
+          case CCLongLong => SignedBVSort(64)
+          case CCULongLong => UnsignedBVSort(64)
+          case _ => Sort.Integer
+        }
       }
-      case ArithmeticMode.ILP32 => typ match {
-        case CCInt      => SignedBVSort  (32)
-        case CCUInt     => UnsignedBVSort(32)
-        case CCLong     => SignedBVSort  (32)
-        case CCULong    => UnsignedBVSort(32)
-        case CCLongLong => SignedBVSort  (64)
-        case CCULongLong=> UnsignedBVSort(64)
-        case _          => Sort.Integer
-      }
-      case ArithmeticMode.LP64 => typ match {
-        case CCInt      => SignedBVSort  (32)
-        case CCUInt     => UnsignedBVSort(32)
-        case CCLong     => SignedBVSort  (64)
-        case CCULong    => UnsignedBVSort(64)
-        case CCLongLong => SignedBVSort  (64)
-        case CCULongLong=> UnsignedBVSort(64)
-        case _          => Sort.Integer
-      }
-      case ArithmeticMode.LLP64 => typ match {
-        case CCInt      => SignedBVSort  (32)
-        case CCUInt     => UnsignedBVSort(32)
-        case CCLong     => SignedBVSort  (32)
-        case CCULong    => UnsignedBVSort(32)
-        case CCLongLong => SignedBVSort  (64)
-        case CCULongLong=> UnsignedBVSort(64)
-        case _          => Sort.Integer
-      }
-    }}
+    }
 
     def rangePred(t : ITerm) : IFormula =
       toSort membershipConstraint t
@@ -626,7 +632,7 @@ class CCReader private (prog : Program,
 
         processes += ((clauses.toList, ParametricEncoder.Singleton))
         clauses.clear
-
+        
         popLocalFrame
       }
       case None =>
@@ -653,7 +659,7 @@ class CCReader private (prog : Program,
   private def collectVarDecls(dec : Dec,
                               global : Boolean,
                               values : Symex) : Unit = dec match {
-    case decl : Declarators => {
+    case decl : Declarators if !isTypeDef(decl.listdeclaration_specifier_) => {
       val typ = getType(decl.listdeclaration_specifier_)
 
       for (initDecl <- decl.listinit_declarator_) {
@@ -668,7 +674,7 @@ class CCReader private (prog : Program,
             val name = getName(declarator)
             val directDecl =
               declarator.asInstanceOf[NoPointer].direct_declarator_
-
+  
             directDecl match {
               case _ : NewFuncDec /* | _ : OldFuncDef */ | _ : OldFuncDec =>
                 functionDecls.put(name, (directDecl, typ))
@@ -696,7 +702,7 @@ class CCReader private (prog : Program,
               }
             }
           }
-
+  
           case _ : InitDecl | _ : HintInitDecl => {
             val (declarator, initializer) = initDecl match {
               case initDecl : InitDecl =>
@@ -714,7 +720,7 @@ class CCReader private (prog : Program,
                 else
                   (values eval init.exp_, i(true))
             }
-
+  
             if (global) {
               globalVars += c
               globalVarTypes += typ
@@ -722,7 +728,7 @@ class CCReader private (prog : Program,
             } else {
               addLocalVar(c, typ)
             }
-
+  
             typ match {
               case CCClock =>
                 values addValue translateClockValue(initValue)
@@ -731,7 +737,7 @@ class CCReader private (prog : Program,
               case typ =>
                 values addValue (typ cast initValue)
             }
-
+  
             values addGuard initGuard
           }
         }
@@ -819,6 +825,14 @@ class CCReader private (prog : Program,
 //    case dec : OldFuncDef => getName(dec.direct_declarator_)
     case dec : OldFuncDec => getName(dec.direct_declarator_)
   }
+
+  private def isTypeDef(specs : Seq[Declaration_specifier]) : Boolean =
+    specs exists {
+      case spec : Storage =>
+        spec.storage_class_specifier_.isInstanceOf[MyType]
+      case _ =>
+        false
+    }
 
   private def getType(specs : Seq[Declaration_specifier]) : CCType =
     getType(for (specifier <- specs.iterator;
@@ -972,6 +986,18 @@ class CCReader private (prog : Program,
 
   //////////////////////////////////////////////////////////////////////////////
 
+  private def translateConstantExpr(expr : Constant_expression) : CCExpr = {
+    val symex = Symex(null)
+    symex.saveState
+    val res = symex eval expr.asInstanceOf[Especial].exp_
+    if (!symex.atomValuesUnchanged)
+      throw new TranslationException(
+        "constant expression is not side-effect free")
+    res
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+
   private object Symex {
     def apply(initPred : Predicate) = {
       val values = new ArrayBuffer[CCExpr]
@@ -1038,13 +1064,13 @@ class CCReader private (prog : Program,
 
       if (usingInitialPredicates) {
         import HornPreprocessor.VerifHintInitPred
-
+        
         // if the pushed value refers to other variables,
         // add initial predicates that relate the values of
         // temporary variables with the original variables
         //
         // TODO: this is currently not very effective ...
-
+        
         val varMapping =
           (for (d <- v.occurringConstants.iterator;
                 index = lookupVarNoException(d.name))
@@ -1122,6 +1148,11 @@ class CCReader private (prog : Program,
       outputClause(elsePred)
     }
 
+    def assertProperty(property : IFormula) : Unit = {
+      import HornClauses._
+      assertionClauses += (property :- (initAtom, guard))
+    }
+
     def addValue(t : CCExpr) = {
       values += t
       touchedGlobalState = touchedGlobalState || !freeFromGlobal(t)
@@ -1164,7 +1195,6 @@ class CCReader private (prog : Program,
     private def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
       case exp : Eselect => asLValue(exp.exp_)
-      //case exp : Eassign => asLValue(exp.exp_1)
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1502,15 +1532,12 @@ class CCReader private (prog : Program,
 
       case exp : Efunkpar => (printer print exp.exp_) match {
         case "__VERIFIER_error" if (exp.listexp_.isEmpty) => {
-          import HornClauses._
-          assertionClauses += (false :- (initAtom, guard))
+          assertProperty(false)
           pushVal(CCFormula(true, CCInt))
         }
         case "assert" | "static_assert" | "__VERIFIER_assert"
                           if (exp.listexp_.size == 1) => {
-          import HornClauses._
-          val property = atomicEval(exp.listexp_.head).toFormula
-          assertionClauses += (property :- (initAtom, guard))
+          assertProperty(atomicEval(exp.listexp_.head).toFormula)
           pushVal(CCFormula(true, CCInt))
         }
         case "assume" | "__VERIFIER_assume"
@@ -1989,8 +2016,15 @@ class CCReader private (prog : Program,
         labelledLocs.put(stm.cident_, (entry, allFormalVars))
         translate(stm.stm_, entry, exit)
       }
-      //-- SlabelTwo.   Labeled_stm ::= "case" Constant_expression ":" Stm ;
-      //SlabelThree. Labeled_stm ::= "default" ":" Stm;
+      case stm : SlabelTwo => { // Labeled_stm ::= "case" Constant_expression ":" Stm ;
+        val caseVal = translateConstantExpr(stm.constant_expression_)
+        innermostSwitchCaseCollector += ((caseVal, entry))
+        translate(stm.stm_, entry, exit)
+      }
+      case stm : SlabelThree => { // . Labeled_stm ::= "default" ":" Stm;
+        innermostSwitchCaseCollector += ((null, entry))
+        translate(stm.stm_, entry, exit)
+      }
     }
 
     private def translateWithEntryClause(
@@ -2086,8 +2120,11 @@ class CCReader private (prog : Program,
         }
     }
 
+    type SwitchCaseCollector = ArrayBuffer[(CCExpr, Predicate)]
+
     var innermostLoopCont : Predicate = null
     var innermostLoopExit : Predicate = null
+    var innermostSwitchCaseCollector : SwitchCaseCollector = null
 
     private def withinLoop[A](
                      loopCont : Predicate, loopExit : Predicate)
@@ -2104,6 +2141,22 @@ class CCReader private (prog : Program,
       }
     }
 
+    private def withinSwitch[A](
+                     switchExit : Predicate,
+                     caseCollector : SwitchCaseCollector)
+                     (comp : => A) : A = {
+      val oldExit = innermostLoopExit
+      val oldCollector = innermostSwitchCaseCollector
+      innermostLoopExit = switchExit
+      innermostSwitchCaseCollector = caseCollector
+      try {
+        comp
+      } finally {
+        innermostLoopExit = oldExit
+        innermostSwitchCaseCollector = oldCollector
+      }
+    }
+
     private def translate(stm : Iter_stm,
                           entry : Predicate,
                           exit : Predicate) : Unit = stm match {
@@ -2114,7 +2167,7 @@ class CCReader private (prog : Program,
         val condSymex = Symex(entry)
         val cond = (condSymex eval stm.exp_).toFormula
         condSymex.outputITEClauses(cond, first, exit)
-        withinLoop(entry, exit) { //continue,break handling
+        withinLoop(entry, exit) {
           translate(stm.stm_, first, entry)
         }
       }
@@ -2157,7 +2210,7 @@ class CCReader private (prog : Program,
         withinLoop(third, exit) {
           translate(body, second, third)
         }
-
+        
         stm match {
           case stm : SiterThree =>
             output(Clause(atom(first, allFormalVars),
@@ -2174,7 +2227,7 @@ class CCReader private (prog : Program,
     private def translate(stm : Selection_stm,
                           entry : Predicate,
                           exit : Predicate) : Unit = stm match {
-      case _ : SselOne | _ : SselTwo => {
+      case _ : SselOne | _ : SselTwo => { // if
         val first, second = newPred
         val vars = allFormalVars
         val condSymex = Symex(entry)
@@ -2194,7 +2247,44 @@ class CCReader private (prog : Program,
           }
         }
       }
-//      case stm : SselThree.  Selection_stm ::= "switch" "(" Exp ")" Stm ;
+
+      case stm : SselThree => {  // switch
+        val selectorSymex = Symex(entry)
+        val selector = (selectorSymex eval stm.exp_).toTerm
+
+        val newEntry = newPred
+        val collector = new SwitchCaseCollector
+
+        withinSwitch(exit, collector) {
+          translate(stm.stm_, newEntry, exit)
+        }
+
+        // add clauses for the various cases of the switch
+        val (defaults, cases) = collector partition (_._1 == null)
+        val guards = for ((value, _) <- cases) yield (selector === value.toTerm)
+
+        for (((_, target), guard) <- cases.iterator zip guards.iterator) {
+          selectorSymex.saveState
+          selectorSymex addGuard guard
+          selectorSymex outputClause target
+          selectorSymex.restoreState
+        }
+
+        defaults match {
+          case Seq() =>
+            // add an assertion that we never try to jump to a case that
+            // does not exist. TODO: add a parameter for this?
+            selectorSymex assertProperty or(guards)
+          case Seq((_, target)) => {
+            selectorSymex.saveState
+            selectorSymex addGuard ~or(guards)
+            selectorSymex outputClause target
+            selectorSymex.restoreState
+          }
+          case _ =>
+            throw new TranslationException("multiple default cases in switch")
+        }
+      }
     }
 
     private def translate(jump : Jump_stm,
