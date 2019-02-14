@@ -1229,7 +1229,6 @@ class CCReader private (prog : Program,
 
     private def buildStructTerm(exp: Exp, childName: String, lhsPartial: CCTerm): CCTerm = {
       val structType = getStructType(exp).asInstanceOf[CCStruct]
-
       def buildTerm(name: String) :IFunApp = {
         val structADT = structType.adt
         val ind = structType.getFieldIndex(childName)
@@ -1280,15 +1279,15 @@ class CCReader private (prog : Program,
         setValue(asLValue(exp.exp_1), translateDurationValue(topVal))
       }
       case exp : Eassign if (exp.assignment_op_.isInstanceOf[Assign]) => {
-        val rhs = eval(exp.exp_2)
+        val rhsExp = eval(exp.exp_2)
+        val rhs = exp.exp_1 match {
+          case selExp: Eselect => buildStructTerm(selExp, rhsExp.asInstanceOf[CCTerm])
+          case _ => rhsExp
+        }
+        pushVal(rhs)
         maybeOutputClause
-        val lhsString = asLValue(exp.exp_1)
-        val lhs = exp.exp_1 match {
-          case selExp: Eselect => buildStructTerm(selExp, rhs.asInstanceOf[CCTerm])
-          case _ => getValue(lhsString)
-          }
-        pushVal(lhs)
-        setValue(lhsString, lhs)
+        val lhsName = asLValue(exp.exp_1)
+        setValue(lhsName, rhs)
       }
       case exp : Eassign => {
         evalHelp(exp.exp_1)
@@ -1558,9 +1557,16 @@ class CCReader private (prog : Program,
         setValue(lhsName, lhs)
       }
       case exp : Epostdec => {
-        evalHelp(exp.exp_)
+        val rhs = eval(exp.exp_)
+        val rhsDec = CCTerm((rhs.toTerm - 1), rhs.typ)
+        val lhsName = asLValue(exp.exp_)
+        pushVal(rhs)
         maybeOutputClause
-        setValue(asLValue(exp.exp_), topVal mapTerm (_ - 1))
+        val lhs = exp.exp_ match {
+          case field: Eselect => buildStructTerm(field, rhsDec)
+          case _ => rhsDec
+        }
+        setValue(lhsName, lhs)
       }
       case exp : Evar =>
         pushVal(getValue(exp.cident_))
