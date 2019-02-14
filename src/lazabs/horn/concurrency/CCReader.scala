@@ -142,15 +142,12 @@ object CCReader {
     val UNSIGNED_RANGE : IdealInt = IdealInt("FFFFFFFFFFFFFFFF", 16) // 64bit
     val isUnsigned : Boolean = true
   }
-  private trait Composite extends CCType {
-
-  }
   private case class CCStruct(adt: ADT, name: String, fields: List[(String, CCType)])
-    extends CCType with Composite{
+    extends CCType{
     override def toString : String = "struct " + name + ": (" +fields.mkString + ")"
 
     def getFieldIndex(name: String) =  fields.indexWhere(_._1 == name)
-
+    def getFieldType(ind: Int) = fields(ind)._2
     def getADTSelector(ind: Int) = {
       if(ind < 0)
         throw new TranslationException(
@@ -902,11 +899,11 @@ class CCReader private (prog : Program,
                   println("Unique types are not supported yet") // TODO handle unique types
                 case spec : TagType => // if struct not defined yet, forward declaration; else, Type_specifier
                   val structName = spec.cident_
-                  structDefs.get(structName) match {
-                    case Some(struct) => typ = struct
-                    case None => throw new TranslationException( // TODO handle forward declarations here, currently not supported
-                      "struct " + structName + " is used without being defined first! (Forward declarations " +
-                        "are not supported yet.)")
+                  typ = structDefs.get(structName) match {
+                    case Some(struct) => struct
+                    case None => throw new TranslationException(
+                      "struct " + structName + " is used without being defined first! " +
+                        "(Forward declarations are not supported yet.)")
                   }
               }
             case _ : Tclock => {
@@ -1131,10 +1128,22 @@ class CCReader private (prog : Program,
         touchedGlobalState || ind < globalVars.size || !freeFromGlobal(t)
     }
 
-    def getVarType (name: String) = {
+    private def getVarType (name: String) = {
       val ind = lookupVar(name)
       if (ind < globalVars.size) globalVarTypes(ind)
       else localVarTypes(ind - globalVarTypes.size)
+    }
+
+    private def getStructType(exp: Exp) : CCType = {
+      exp match {
+        case nested: Eselect => {
+          val parentType = getStructType(nested.exp_).asInstanceOf[CCStruct]
+          val ind = parentType.getFieldIndex(nested.cident_)
+          if (ind == -1) getStructType(nested.exp_) //field is located deeper
+          else parentType.getFieldType(ind)
+        }
+        case variable: Evar => getVarType(variable.cident_)
+      }
     }
 
     def getValues : Seq[CCExpr] =
@@ -1146,6 +1155,7 @@ class CCReader private (prog : Program,
 
     private def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
+      case exp : Eselect => asLValue(exp.exp_)
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1217,6 +1227,39 @@ class CCReader private (prog : Program,
       res
     }
 
+    private def buildStructTerm(exp: Exp, childName: String, lhsPartial: CCTerm): CCTerm = {
+      val structType = getStructType(exp).asInstanceOf[CCStruct]
+
+      def buildTerm(name: String) :IFunApp = {
+        val structADT = structType.adt
+        val ind = structType.getFieldIndex(childName)
+        val ctorArgs =
+          for (n <- structType.fields.indices) yield {
+            if (n == ind) lhsPartial.toTerm
+            else structType.getADTSelector(n)(eval(exp).toTerm)
+          }
+        structADT.constructors.head(ctorArgs: _*)
+      }
+      exp match {
+        case field: Eselect => {
+          val name = field.cident_
+          val partial = CCTerm(buildTerm(name), structType)
+          buildStructTerm(field.exp_, name, partial)
+        }
+        case top: Evar => {
+          val name = top.cident_
+          CCTerm(buildTerm(name), structType)
+        }
+      }
+    }
+
+    // Takes the field and the rhs term to be assigned to it,
+    // then builds the struct term bottom-up and returns it.
+    private def buildStructTerm(field: Eselect, rhs: CCTerm): CCTerm = {
+      val fieldName = field.cident_
+      buildStructTerm(field.exp_, fieldName, rhs)
+    }
+
     private def evalHelp(exp : Exp) : Unit = exp match {
       case exp : Ecomma => {
         evalHelp(exp.exp_1)
@@ -1237,39 +1280,15 @@ class CCReader private (prog : Program,
         setValue(asLValue(exp.exp_1), translateDurationValue(topVal))
       }
       case exp : Eassign if (exp.assignment_op_.isInstanceOf[Assign]) => {
-        eval(exp.exp_2) //this put 42 in stack
+        val rhs = eval(exp.exp_2)
         maybeOutputClause
-        evalHelp(exp.exp_1) //this should prepare rhs recursively
-                // b(s) ---> c(b(s)) ---> S2
-
-        val (actualLHS, fields) = {
-          var lhs = exp.exp_1
-          var fields = List[String]()
-
-          while (lhs.isInstanceOf[Eselect]) {
-            fields = lhs.asInstanceOf[Eselect].cident_ :: fields
-            lhs = lhs.asInstanceOf[Eselect].exp_
+        val lhsString = asLValue(exp.exp_1)
+        val lhs = exp.exp_1 match {
+          case selExp: Eselect => buildStructTerm(selExp, rhs.asInstanceOf[CCTerm])
+          case _ => getValue(lhsString)
           }
-          (lhs, fields)
-        }
-        var rhs = topVal.toTerm //only if there is a select
-        val lhsString = asLValue(actualLHS)
-        val lhs = getValue(lhsString)
-        var curType = getVarType(lhsString)
-
-        for (field <- fields) {
-          val structType = curType.asInstanceOf[CCStruct]
-          val structADT = structType.adt
-          val ind = structType.getFieldIndex(field)
-          val ctorArgs =
-            for (n <- structType.fields.indices) yield {
-              if (n == ind) rhs
-              else structType.getADTSelector(n)(lhs.toTerm)
-            }
-          rhs = structADT.constructors.head(ctorArgs:_*)
-        }
-
-        setValue(lhsString, CCTerm(rhs, getVarType(lhsString)))
+        pushVal(lhs)
+        setValue(lhsString, lhs)
       }
       case exp : Eassign => {
         evalHelp(exp.exp_1)
@@ -1512,11 +1531,11 @@ class CCReader private (prog : Program,
 
       case exp : Eselect => { //Exp16 ::= Exp16 "." Ident;
         val subexpr = eval(exp.exp_)
-        val field = exp.cident_
+        val fieldName = exp.cident_
         subexpr.typ match {
           case structType: CCStruct => {
-            val ind = structType.getFieldIndex(field)
-            val fieldType = structType.fields(ind)._2
+            val ind = structType.getFieldIndex(fieldName)
+            val fieldType = structType.getFieldType(ind)
             val sel = structType.getADTSelector(ind)
             pushVal(CCTerm(sel(subexpr.toTerm), fieldType))
           }
@@ -1527,46 +1546,16 @@ class CCReader private (prog : Program,
       }
 //      case exp : Epoint.      Exp16 ::= Exp16 "->" Ident;
       case exp : Epostinc => {
-        exp.exp_ match {
-          case select: Eselect => {
-            val subexpr = eval(exp.exp_)
-            maybeOutputClause
-            val field = select.cident_
-            val (actualLHS, fields) = {
-              var lhs: Exp = select
-              var fields = List[String]()
-
-              while (lhs.isInstanceOf[Eselect]) {
-                fields = lhs.asInstanceOf[Eselect].cident_ :: fields
-                lhs = lhs.asInstanceOf[Eselect].exp_
-              }
-              (lhs, fields)
-            }
-            var rhs = subexpr.toTerm // mapTerm (_ + 1)
-            val lhsString = asLValue(actualLHS)
-            val lhs = getValue(lhsString)
-            val curType = getVarType(lhsString)
-
-            for (field <- fields) {
-              val structType = curType.asInstanceOf[CCStruct]
-              val structADT = structType.adt
-              val ind = structType.getFieldIndex(field)
-              val ctorArgs =
-                for (n <- structType.fields.indices) yield {
-                  if (n == ind) rhs + 1
-                  else structType.getADTSelector(n)(lhs.toTerm)
-                }
-              rhs = structADT.constructors.head(ctorArgs: _*)
-            }
-
-            pushVal(subexpr)
-            setValue(lhsString, CCTerm(rhs, curType))
-          }
-          case _ =>
-            evalHelp(exp.exp_)
-            maybeOutputClause
-            setValue(asLValue(exp.exp_), topVal mapTerm (_ + 1))
+        val rhs = eval(exp.exp_)
+        val rhsInc = CCTerm((rhs.toTerm + 1), rhs.typ)
+        val lhsName = asLValue(exp.exp_)
+        pushVal(rhs)
+        maybeOutputClause
+        val lhs = exp.exp_ match {
+          case field: Eselect => buildStructTerm(field, rhsInc)
+          case _ => rhsInc
         }
+        setValue(lhsName, lhs)
       }
       case exp : Epostdec => {
         evalHelp(exp.exp_)

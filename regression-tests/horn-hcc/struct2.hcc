@@ -8,7 +8,16 @@ struct S{
 };
 
 thread A {
+    int c = 40;
+    c++;
+    c++;
     struct S s;
-    s.b.c = 42;
-    assert(s.b.c== 42);
+    s.b.c = 42; //42,-
+    s.b.d = s.b.c++; //43,42 //doesn't work fix
+    s.a = s.b.c + s.b.d; //85
+    s.a++; //86
+    assert(s.b.c == 43); 
+    assert(s.b.d == 42);
+    assert(s.a == 86); 
+    assert(c == 42);
 }
