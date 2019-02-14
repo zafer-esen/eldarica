@@ -1156,6 +1156,7 @@ class CCReader private (prog : Program,
     private def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
       case exp : Eselect => asLValue(exp.exp_)
+      //case exp : Eassign => asLValue(exp.exp_1)
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1227,7 +1228,7 @@ class CCReader private (prog : Program,
       res
     }
 
-    private def buildStructTerm(exp: Exp, childName: String, lhsPartial: CCTerm): CCTerm = {
+    private def buildStructTerm(exp: Exp, childName: String, lhsPartial: CCExpr): CCTerm = {
       val structType = getStructType(exp).asInstanceOf[CCStruct]
       def buildTerm(name: String) :IFunApp = {
         val structADT = structType.adt
@@ -1254,8 +1255,12 @@ class CCReader private (prog : Program,
 
     // Takes the field and the rhs term to be assigned to it,
     // then builds the struct term bottom-up and returns it.
-    private def buildStructTerm(field: Eselect, rhs: CCTerm): CCTerm = {
+    private def buildStructTerm(field: Eselect, rhs: CCExpr): CCTerm = {
       val fieldName = field.cident_
+      val supposedParentType = getStructType(field.exp_).asInstanceOf[CCStruct]
+      if (supposedParentType.getFieldIndex(fieldName) == -1)
+        throw new TranslationException(fieldName + " is not a member of " +
+          supposedParentType + "!")
       buildStructTerm(field.exp_, fieldName, rhs)
     }
 
@@ -1442,16 +1447,28 @@ class CCReader private (prog : Program,
         pushVal(convertType(popVal, getType(exp.type_name_)))
       }
       case exp : Epreinc => {
-        evalHelp(exp.exp_)
+        val lhs = eval(exp.exp_) // ++x => x = x + 1 (with "x + 1" in stack in the end)
+        val rhs = lhs mapTerm (_ + 1)
+        val lhsName = asLValue(exp.exp_)
+        pushVal(rhs)
         maybeOutputClause
-        pushVal(popVal mapTerm (_ + 1))
-        setValue(asLValue(exp.exp_), topVal)
+        val rhsActual = exp.exp_ match {
+          case field: Eselect => buildStructTerm(field, rhs)
+          case _ => rhs
+        }
+        setValue(lhsName, rhsActual)
       }
       case exp : Epredec => {
-        evalHelp(exp.exp_)
+        val lhs = eval(exp.exp_) // --x => x = x - 1 (with "x - 1" in stack in the end)
+        val rhs = lhs mapTerm (_ - 1)
+        val lhsName = asLValue(exp.exp_)
+        pushVal(rhs)
         maybeOutputClause
-        pushVal(popVal mapTerm (_ - 1))
-        setValue(asLValue(exp.exp_), topVal)
+        val rhsActual = exp.exp_ match {
+          case field: Eselect => buildStructTerm(field, rhs)
+          case _ => rhs
+        }
+        setValue(lhsName, rhsActual)
       }
       case exp : Epreop => {
         evalHelp(exp.exp_)
@@ -1534,6 +1551,9 @@ class CCReader private (prog : Program,
         subexpr.typ match {
           case structType: CCStruct => {
             val ind = structType.getFieldIndex(fieldName)
+            if (ind == -1)
+              throw new TranslationException(fieldName + " is not a member of "
+                + structType + "!")
             val fieldType = structType.getFieldType(ind)
             val sel = structType.getADTSelector(ind)
             pushVal(CCTerm(sel(subexpr.toTerm), fieldType))
@@ -1545,28 +1565,28 @@ class CCReader private (prog : Program,
       }
 //      case exp : Epoint.      Exp16 ::= Exp16 "->" Ident;
       case exp : Epostinc => {
-        val rhs = eval(exp.exp_)
-        val rhsInc = CCTerm((rhs.toTerm + 1), rhs.typ)
+        val lhs = eval(exp.exp_) // x++ => x = x + 1 (with x in stack in the end)
+        val rhs = lhs mapTerm (_ + 1)
         val lhsName = asLValue(exp.exp_)
-        pushVal(rhs)
+        pushVal(lhs)
         maybeOutputClause
-        val lhs = exp.exp_ match {
-          case field: Eselect => buildStructTerm(field, rhsInc)
-          case _ => rhsInc
+        val rhsActual = exp.exp_ match {
+          case field: Eselect => buildStructTerm(field, rhs)
+          case _ => rhs
         }
-        setValue(lhsName, lhs)
+        setValue(lhsName, rhsActual)
       }
       case exp : Epostdec => {
-        val rhs = eval(exp.exp_)
-        val rhsDec = CCTerm((rhs.toTerm - 1), rhs.typ)
+        val lhs = eval(exp.exp_) // x++ => x = x - 1 (with x in stack in the end)
+        val rhs = lhs mapTerm (_ - 1)
         val lhsName = asLValue(exp.exp_)
-        pushVal(rhs)
+        pushVal(lhs)
         maybeOutputClause
-        val lhs = exp.exp_ match {
-          case field: Eselect => buildStructTerm(field, rhsDec)
-          case _ => rhsDec
+        val rhsActual = exp.exp_ match {
+          case field: Eselect => buildStructTerm(field, rhs)
+          case _ => rhs
         }
-        setValue(lhsName, lhs)
+        setValue(lhsName, rhsActual)
       }
       case exp : Evar =>
         pushVal(getValue(exp.cident_))

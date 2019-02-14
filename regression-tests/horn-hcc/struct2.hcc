@@ -1,26 +1,23 @@
+struct S3{
+    int e;
+}
+
 struct S2{
-       int c;
-       int d;
+    int c;
+    struct S3 d;
 };
-struct S{
-       int a;
-       struct S2 b;
+struct S1{
+    int a;
+    struct S2 b;
 };
 
 thread A {
-    int c = 40;
-    int d;
-    c++;
-    c++;
-    struct S s;
-    s.b.c = 42; 
-    s.b.d = s.b.c++;
-    s.a = s.b.c + s.b.d; 
-    s.a++; 
-    d = s.b.c--;
-    assert(s.a == 86); 
-    assert(s.b.c == 42); 
-    assert(s.b.d == 42);
-    assert(c == 42);
-    assert(d == 43);
+    struct S1 s;
+    s.b.d.e = 41;
+    s.b.c = s.b.d.e++;
+    s.a = ++s.b.c;
+
+    assert(s.b.d.e == 42);
+    assert(s.b.c == 42);
+    assert(s.a == 42);
 }
