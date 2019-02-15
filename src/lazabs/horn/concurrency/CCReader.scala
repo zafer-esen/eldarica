@@ -655,7 +655,6 @@ class CCReader private (prog : Program,
   }
 
   //////////////////////////////////////////////////////////////////////////////
-
   private def collectVarDecls(dec : Dec,
                               global : Boolean,
                               values : Symex) : Unit = dec match {
@@ -754,8 +753,26 @@ class CCReader private (prog : Program,
         }
       }
     }
+    case decl : Declarators => { // a typedef
+      val typ = decl.listdeclaration_specifier_(1) match { //todo write a func for this?
+        case spec: Type => spec.type_specifier_
+        case _ =>  throw new TranslationException("Storage and SpecProp not implemented yet") //todo necessary?
+      }
+      val name = getName(decl.listinit_declarator_(0))
+      typ match {
+        case structDec: Tstruct => buildStructType(structDec, name)
+        case _ => throw new TranslationException("typedef only supported for structs right now.")
+      }
+    }
     case nodecl : NoDeclarator => {
-      getType(nodecl.listdeclaration_specifier_) // TODO: is calling getType here ok? this is done just to create struct
+      val typ = nodecl.listdeclaration_specifier_(1) match { //todo write a func for this?
+        case spec: Type => spec.type_specifier_
+        case _ =>  throw new TranslationException("Storage and SpecProp not implemented yet") //todo necessary?
+      }
+      typ match {
+        case structDec: Tstruct => buildStructType(structDec)
+        case _ => throw new TranslationException("NoDeclarator only for structs") //todo check if necessary
+      }
     }
   }
 
@@ -814,6 +831,10 @@ class CCReader private (prog : Program,
       decl.liststruct_declarator_.iterator.next().asInstanceOf[Decl].declarator_)
   }
 
+  private def getName(decl : Init_declarator) : String = decl match {
+    case decl : OnlyDecl => getName(decl.declarator_)
+  }
+
   private def getName(decl : Declarator) : String = decl match {
     case decl : NoPointer => getName(decl.direct_declarator_)
   }
@@ -853,6 +874,45 @@ class CCReader private (prog : Program,
         yield qual.asInstanceOf[TypeSpec].type_specifier_)
   }
 
+  private def buildStructType(spec: Tstruct): CCStruct ={
+    spec.struct_or_union_spec_ match {
+      case _: Unique => buildStructType(spec, CCStruct.genAnonStructName)
+      case tagged: Tag => buildStructType(spec, tagged.cident_)
+      case _ => throw new IllegalArgumentException("struct can only be built" +
+        "with Unique or Tag types!")
+    }
+  }
+
+  private def buildStructType (spec: Tstruct,
+                               structName: String): CCStruct = {
+    if (structDefs contains structName)
+      throw new TranslationException(
+        "struct " + structName + " is already defined")
+
+    val fields = spec.struct_or_union_spec_ match { //todo: is there a better way?
+      case dec: Tag => dec.liststruct_dec_
+      case dec: Unique => dec.liststruct_dec_
+      case _ => throw new IllegalArgumentException("struct can only be built" +
+        "with Unique or Tag types!")
+    }
+
+    val fieldList : List[(String, CCType)] = (for ( field <- fields ) yield
+      (getName(field.asInstanceOf[Structen]),
+        getType(field.asInstanceOf[Structen]))).toList  // .asInstanceOf[ArrayBuffer[String]].toList
+
+    val ADTFieldList : List[(String, ap.theories.ADT.OtherSort)] =
+      for((fieldName, fieldType) <- fieldList)
+        yield (fieldName, ADT.OtherSort(fieldType.toSort))
+
+    val structADT =
+      new ADT(List("struct" + structName),
+        List((structName, ADT.CtorSignature(ADTFieldList, ADT.ADTSort(0)))))
+
+    val newStruct = CCStruct(structADT, structName, fieldList)
+    structDefs += (structName -> newStruct)
+    newStruct
+  }
+
   private def getType(specs : Iterator[Type_specifier]) : CCType = {
     // by default assume that the type is int
     var typ : CCType = CCInt
@@ -883,7 +943,7 @@ class CCReader private (prog : Program,
                   val structName = spec.cident_
                   if (structDefs contains structName)
                     throw new TranslationException(
-                      "struct " + structName + " is already declared")
+                      "struct " + structName + " is already defined")
 
                   val fields = spec.liststruct_dec_
                   val fieldList : List[(String, CCType)] = (for ( field <- fields ) yield

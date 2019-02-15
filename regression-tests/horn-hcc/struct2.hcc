@@ -1,10 +1,9 @@
 struct S3{
-    int e;
-}
-
+    int a;
+};
 struct S2{
-    int c;
-    struct S3 d;
+    int a;
+    struct S3 b;
 };
 struct S1{
     int a;
@@ -13,11 +12,13 @@ struct S1{
 
 thread A {
     struct S1 s;
-    s.b.d.e = 41;
-    s.b.c = s.b.d.e++;
-    s.a = ++s.b.c;
+    s.b.b.a = 41;
+    s.b.a = s.b.b.a++;
+    s.a = ++s.b.a;
+    s.b.b.a--;
+    --s.b.b.a;
 
-    assert(s.b.d.e == 42);
-    assert(s.b.c == 42);
+    assert(s.b.b.a == 40);
+    assert(s.b.a == 42);
     assert(s.a == 42);
 }
