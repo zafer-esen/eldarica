@@ -5,6 +5,13 @@ struct{
     } d;
 } b;
 
+struct{
+    int a;
+    struct {
+        int c;
+    } d;
+} b1;
+
 //struct S1{
 //    int a;
 //    struct S2 d;
@@ -22,6 +29,7 @@ thread A {
 //    s.a = 42;
     b.a = 42;
     b.d.c = 42;
+    b1 = b;
     assert(b.a == 42);
     assert(b.d.c == 42);
 /*    s.b = 41;

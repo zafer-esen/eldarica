@@ -14,11 +14,12 @@ thread A {
     struct S1 s;
     s.b.b.a = 41;
     s.b.a = s.b.b.a++;
-    s.a = ++s.b.a;
     s.b.b.a--;
-    --s.b.b.a;
+    s.a = ++s.b.a;
+    --s.b.a;
+    s.b.a--;
 
-    assert(s.b.b.a == 40);
-    assert(s.b.a == 42);
+    assert(s.b.b.a == 41);
+    assert(s.b.a == 40);
     assert(s.a == 42);
 }
