@@ -160,8 +160,15 @@ object CCReader {
           "struct " + name + " does not contain field with index: " + ind)
       adt.selectors(0)(ind)
     }
-    def getZeroInit: ITerm =
-      adt.constructors.head(List.fill[ITerm](fields.length)(0): _*)
+    def getZeroInit: ITerm = {
+      val const: List[ITerm] =
+        for (field <- fields) yield
+          field._2 match {
+            case structField: CCStruct => structField.getZeroInit
+            case _ => Int2ITerm(0)
+          }
+      adt.constructors.head(const: _*)
+    }
   }
   private case object CCClock extends CCType {
     override def toString : String = "clock"
@@ -1285,7 +1292,7 @@ class CCReader private (prog : Program,
                     "Can only handle assignments to variables, not " +
                     (printer print exp))
     }
-
+    
     private def isClockVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar => getValue(exp.cident_).typ == CCClock
       case exp : Eselect => false
@@ -1413,7 +1420,21 @@ class CCReader private (prog : Program,
         setValue(asLValue(exp.exp_1),
           exp.exp_1 match {
           case selExp: Eselect => buildStructTerm(selExp, topVal.asInstanceOf[CCTerm])
-          case _ => topVal
+          case _ => {
+            val rhsType = topVal.typ
+            val lhsType = exp.exp_1 match{
+              case exp: Eselect => getVarType(exp.cident_)
+              case exp: Evar => getVarType(exp.cident_)
+            }
+            if(rhsType.isInstanceOf[CCStruct] &&
+              lhsType.isInstanceOf[CCStruct]) {
+              if(rhsType.asInstanceOf[CCStruct] !=
+                lhsType.asInstanceOf[CCStruct])
+                throw new TranslationException("Cannot assign " + rhsType +
+                  " to " + lhsType + "!")
+            }
+            topVal
+          }
         })
       }
       case exp : Eassign => {
