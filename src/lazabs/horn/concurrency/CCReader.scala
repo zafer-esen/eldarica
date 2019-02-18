@@ -169,6 +169,24 @@ object CCReader {
           }
       adt.constructors.head(const: _*)
     }
+    // Initializes a struct using a stack and returns the initialized term.
+    // The stack's top value must be the first term of the struct.
+    // The fields are initialized left to right depth-first.
+    // If there are not enough values to initialize all the fields, then the
+    // remaining fields are initialized to 0.
+    def getInitialized(values: Stack[ITerm]): ITerm = {
+      val const: List[ITerm] =
+        for (field <- fields) yield
+          field._2 match {
+            case structField: CCStruct => structField.getInitialized(values)
+            case _ => {
+              if (values.isEmpty)
+                Int2ITerm(0)
+              else values.pop()
+            }
+          }
+      adt.constructors.head(const: _*)
+    }
   }
   private case object CCClock extends CCType {
     override def toString : String = "clock"
@@ -694,7 +712,7 @@ class CCReader private (prog : Program,
                       values addValue CCTerm(0, typ)
                     case typ: CCStruct =>
                       values addValue CCTerm(typ.getZeroInit, typ)
-                      values addGuard (typ rangePred c) // todo: why do we need this?
+                      values addGuard (typ rangePred c)
                     case typ => {
                       values addValue CCTerm(c, typ)
                       values addGuard (typ rangePred c)
@@ -725,6 +743,17 @@ class CCReader private (prog : Program,
                   (CCTerm(c, typ), typ rangePred c)
                 else
                   (values eval init.exp_, i(true))
+              case _ : InitListOne | _ : InitListTwo => {
+                val initStack = getInitsStack(initializer, values)
+                typ match {
+                  case structType: CCStruct =>{
+                    (CCTerm(structType.getInitialized(initStack), typ),
+                      typ rangePred c)
+                  }
+                  case _ => throw new TranslationException("Union or array list " +
+                    "initialization is not yet supported.")
+                }
+              }
             }
   
             if (global) {
@@ -932,6 +961,27 @@ class CCReader private (prog : Program,
     val newStruct = CCStruct(structADT, structName, fieldList)
     structDefs += (structName -> newStruct)
     newStruct
+  }
+  private def getInitsStack(init: Initializer, s: Symex): Stack[ITerm] = {
+    val initStack = new Stack[ITerm]
+    def fillInit(init: Initializer) {
+      init match {
+        case init: InitExpr => initStack.push(s.eval(init.exp_).toTerm) //todo correct?
+        case init: InitListOne => fillInits(init.initializers_)
+        case init: InitListTwo => fillInits(init.initializers_)
+      }
+    }
+    def fillInits(inits: Initializers) {
+      inits match {
+        case init: AnInit => fillInit(init.initializer_)
+        case init: MoreInit => {
+          fillInit(init.initializer_)
+          fillInits(init.initializers_)
+        }
+      }
+    }
+    fillInit(init)
+    initStack
   }
 
   private def getType(specs : Iterator[Type_specifier]) : CCType = {
@@ -1258,7 +1308,7 @@ class CCReader private (prog : Program,
     // the top parent is at the bottom of the stack.
     private def getParentTypes(exp: Exp) : Stack[CCStruct] = {
       val typeStack = new Stack[CCStruct]
-      fillParentTypes(exp) //fills a stack bottom-up (top value is parent type)
+      fillParentTypes(exp.asInstanceOf[Eselect].exp_) //fills a stack bottom-up (top value is parent type)
       def fillParentTypes(expField: Exp) : CCType = {
         val thisType = expField match {
           case nested: Eselect => {
@@ -1292,7 +1342,7 @@ class CCReader private (prog : Program,
                     "Can only handle assignments to variables, not " +
                     (printer print exp))
     }
-    
+
     private def isClockVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar => getValue(exp.cident_).typ == CCClock
       case exp : Eselect => false
@@ -2158,21 +2208,24 @@ class CCReader private (prog : Program,
     }
 
     private def isSEFDeclaration(stm : Stm) : Boolean = stm match {
-      case stm : DecS => {
+      case stm: DecS => {
         stm.dec_ match {
-          case _ : NoDeclarator => true
-          case dec : Declarators =>
+          case _: NoDeclarator => true
+          case dec: Declarators =>
             dec.listinit_declarator_ forall {
-              case _ : OnlyDecl => true
-              case _ : HintDecl => true
-              case decl : InitDecl =>
-                decl.initializer_.asInstanceOf[InitExpr].exp_ match {
-                  case _ : Econst => true
+              case _: OnlyDecl => true
+              case _: HintDecl => true
+              case decl: InitDecl => decl.initializer_ match {
+                case decl: InitExpr => decl.exp_ match {
+                  case _: Econst => true
                   case _ => false
                 }
-              case decl : HintInitDecl =>
+                case decl: InitListOne => false //todo: check if list is SEF
+                case decl: InitListTwo => false //todo: check if list is SEF
+              }
+              case decl: HintInitDecl =>
                 decl.initializer_.asInstanceOf[InitExpr].exp_ match {
-                  case _ : Econst => true
+                  case _: Econst => true
                   case _ => false
                 }
             }

@@ -153,13 +153,18 @@ separator nonempty CIdent ",";
 
 
 InitExpr.    Initializer ::= Exp2 ;
--- InitListOne. Initializer ::= "{" Initializers "}" ;
--- InitListTwo. Initializer ::= "{" Initializers "," "}" ;
+InitListOne. Initializer ::= "{" Initializers "}" ; 
+InitListTwo. Initializer ::= "{" Initializers "," "}" ;
 
+AnInit.      Initializers ::= Initializer ;
+MoreInit.    Initializers ::= Initializers "," Initializer ;
+-- DesInit.     Initializers ::= Designation Initializer ;
+-- DesMoreInit. Initializers ::= Initializers "," Designation Initializer ;
 
--- AnInit.   Initializers ::= Initializer ;
--- MoreInit. Initializers ::= Initializers "," Initializer ;
+-- Desig.        Designation ::= [Designator] "=" ;
 
+-- ArrayDesignator.  Designator ::= "[" Constant_expression "]"
+-- StructDesignator. Designator ::= "." CIdent ;
 
 PlainType.    Type_name ::= [Spec_qual] ;
 ExtendedType. Type_name ::= [Spec_qual] Abstract_declarator ;

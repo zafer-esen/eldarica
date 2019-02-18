@@ -1,43 +1,17 @@
 struct{
     int a;
     struct {
-        int c;
-    } d;
+        int b;
+    } b;
 } b;
 
-struct{
-    int a;
-    struct {
-        int c;
-    } d;
-} b1;
-
-//struct S1{
-//    int a;
-//    struct S2 d;
-//    struct {
-  //      int b;
-       /* struct {
-            int c;
-            struct S2 d;
-        };*/
-   // };
-//};
-
 thread A {   
-//    struct S1 s;
-//    s.a = 42;
     b.a = 42;
-    b.d.c = 42;
-    b1 = b;
-    assert(b.a == 42);
-    assert(b.d.c == 42);
-/*    s.b = 41;
-    s.c = s.b++;
-    s.d.a = ++s.c;*/
+    b.b.b = 41;
 
-  /*  assert(s.a == 42);
-    assert(s.b == 42);
-    assert(s.c == 42);
-    assert(s.d.a == 42);*/
+    b.b = b.b; //produces a bug
+    b.a = b.b.b - 1;
+
+    assert(b.a == 40);
+    assert(b.b.b == 41);
 }

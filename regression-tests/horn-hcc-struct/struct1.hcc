@@ -9,6 +9,9 @@ typedef struct S{
     int a;
 }MyStruct2;
 
+MyStruct s;
+MyStruct2 s2;
+
 //TypeDefStruct s3; //this does not work
 
 /*struct S{
@@ -21,11 +24,6 @@ struct S2{
 };*/
 
 thread A {
-    MyStruct s;
-    MyStruct2 s2;
-
-    s.a = 0;
-    s2.a = 0;
     assert(s.a == 0);
     assert(s2.a == 0);
  /*   struct S s;
