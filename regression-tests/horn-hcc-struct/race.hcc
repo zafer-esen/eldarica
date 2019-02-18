@@ -10,7 +10,7 @@ int flag = 0;
 int main() {
   int n;
 
-  assert(s.x == 0); // currently failing, but should hold
+  assert(s.x == 0);
 
   s.x = n;
 
@@ -18,7 +18,7 @@ int main() {
   ++s.x;
 
   assume(flag == 2);
-  assert(s.x == n + 2); // currently holds, but should not
+  assert(s.x == n + 2); // should not hold
 }
 
 thread A {
