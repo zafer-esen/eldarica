@@ -45,7 +45,7 @@ import lazabs.horn.bottomup.HornClauses
 import lazabs.horn.preprocessor.HornPreprocessor
 
 import scala.collection.mutable.{HashMap => MHashMap, ArrayBuffer, Buffer,
-                                 Stack, LinkedHashSet}
+                                 Stack, LinkedHashSet, Queue}
 
 object CCReader {
 
@@ -186,6 +186,18 @@ object CCReader {
             }
           }
       adt.constructors.head(const: _*)
+    }
+  }
+  private case class CCPointer(name: String,
+                               typ: CCType,
+                               pointsTo: Int = -1,
+                               pointsToField: Boolean = false,
+                               fieldId: List[Int] = Nil) extends CCType {
+    override def toString :String = "Pointer " + name //todo
+    def unary_* : ITerm = {
+      if(pointsTo < 0) throw new TranslationException("Trying to dereference " +
+        "null pointer: " + name + "!")
+      Int2ITerm(42)
     }
   }
   private case object CCClock extends CCType {
@@ -413,6 +425,8 @@ class CCReader private (prog : Program,
   private val functionDefs  = new MHashMap[String, Function_def]
   private val functionDecls = new MHashMap[String, (Direct_declarator, CCType)]
   private val structDefs    = new MHashMap[String, CCStruct]
+  private val pointers      = new MHashMap[String, CCPointer]
+  private val ptrArgInds    = new Queue[Int]
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -693,35 +707,39 @@ class CCReader private (prog : Program,
               case initDecl : HintDecl => initDecl.declarator_
             }
             val name = getName(declarator)
-            val directDecl =
-              declarator.asInstanceOf[NoPointer].direct_declarator_
-  
-            directDecl match {
-              case _ : NewFuncDec /* | _ : OldFuncDef */ | _ : OldFuncDec =>
-                functionDecls.put(name, (directDecl, typ))
-              case _ => {
-                isVariable = true
-                val c = typ newConstant name
-                if (global) {
-                  globalVars += c
-                  globalVarTypes += typ
-                  variableHints += List()
-                  typ match {
-                    case typ : CCArithType =>
-                      // global variables are initialised with 0
-                      values addValue CCTerm(0, typ)
-                    case typ: CCStruct =>
-                      values addValue CCTerm(typ.getZeroInit, typ)
-                      values addGuard (typ rangePred c)
-                    case typ => {
-                      values addValue CCTerm(c, typ)
-                      values addGuard (typ rangePred c)
+            if (declarator.isInstanceOf[BeginPointer])
+              pointers += (name -> CCPointer(name, typ))
+            else {
+              val directDecl =
+                declarator.asInstanceOf[NoPointer].direct_declarator_
+
+              directDecl match {
+                case _: NewFuncDec /* | _ : OldFuncDef */ | _: OldFuncDec =>
+                  functionDecls.put(name, (directDecl, typ))
+                case _ => {
+                  isVariable = true
+                  val c = typ newConstant name
+                  if (global) {
+                    globalVars += c
+                    globalVarTypes += typ
+                    variableHints += List()
+                    typ match {
+                      case typ: CCArithType =>
+                        // global variables are initialised with 0
+                        values addValue CCTerm(0, typ)
+                      case typ: CCStruct =>
+                        values addValue CCTerm(typ.getZeroInit, typ)
+                        values addGuard (typ rangePred c)
+                      case typ => {
+                        values addValue CCTerm(c, typ)
+                        values addGuard (typ rangePred c)
+                      }
                     }
+                  } else {
+                    addLocalVar(c, typ)
+                    values addValue CCTerm(c, typ)
+                    values addGuard (typ rangePred c)
                   }
-                } else {
-                  addLocalVar(c, typ)
-                  values addValue CCTerm(c, typ)
-                  values addGuard (typ rangePred c)
                 }
               }
             }
@@ -735,45 +753,79 @@ class CCReader private (prog : Program,
                 (initDecl.declarator_, initDecl.initializer_)
             }
 
-            isVariable = true
-            val c = typ newConstant getName(declarator)
-            val (initValue, initGuard) = initializer match {
-              case init : InitExpr =>
-                if (init.exp_.isInstanceOf[Enondet])
-                  (CCTerm(c, typ), typ rangePred c)
-                else
-                  (values eval init.exp_, i(true))
-              case _ : InitListOne | _ : InitListTwo => {
-                val initStack = getInitsStack(initializer, values)
-                typ match {
-                  case structType: CCStruct =>{
-                    (CCTerm(structType.getInitialized(initStack), typ),
-                      typ rangePred c)
+            if (declarator.isInstanceOf[BeginPointer]) {
+              val pointDecl = declarator.asInstanceOf[BeginPointer]
+              pointDecl.pointer_ match {
+                case _: Point => //nothing
+                case _ => throw new TranslationException("Pointer qualifiers " +
+                  "and pointers to pointers are not supported yet.")
+              }
+              val pointerName = getName(declarator)
+              initializer match {
+                case init: InitExpr => {
+                  init.exp_ match {
+                    case preop: Epreop => {
+                      val referenceName = (preop.exp_.asInstanceOf[Evar].cident_) //todo: fix this part
+                      preop.unary_operator_ match {
+                        case _: Address => {
+                          val pointer = CCPointer(pointerName, typ, lookupVar(referenceName)) //add suport for struct fields
+                          pointers += (pointer.name -> pointer)
+                          println("Added new pointer: " + pointer.name + " -> " + referenceName)
+                        }
+                        case _ => throw new TranslationException("Trying to " +
+                          "assign a non-address to pointer " + pointerName)
+                      }
+                    }
+                    case _ => throw new TranslationException("pointer " +
+                      "initializations can currently only be done by direct " +
+                      "address assignments") //todo
                   }
-                  case _ => throw new TranslationException("Union or array list " +
-                    "initialization is not yet supported.")
                 }
+                case _ => throw new TranslationException("List initializers " +
+                  "with pointers are not supported.") //todo
               }
             }
-  
-            if (global) {
-              globalVars += c
-              globalVarTypes += typ
-              variableHints += List()
-            } else {
-              addLocalVar(c, typ)
+            else {
+              isVariable = true
+              val c = typ newConstant getName(declarator)
+              val (initValue, initGuard) = initializer match {
+                case init: InitExpr =>
+                  if (init.exp_.isInstanceOf[Enondet])
+                    (CCTerm(c, typ), typ rangePred c)
+                  else
+                    (values eval init.exp_, i(true))
+                case _: InitListOne | _: InitListTwo => {
+                  val initStack = getInitsStack(initializer, values)
+                  typ match {
+                    case structType: CCStruct => {
+                      (CCTerm(structType.getInitialized(initStack), typ),
+                        typ rangePred c)
+                    }
+                    case _ => throw new TranslationException("Union or array list " +
+                      "initialization is not yet supported.")
+                  }
+                }
+              }
+
+              if (global) {
+                globalVars += c
+                globalVarTypes += typ
+                variableHints += List()
+              } else {
+                addLocalVar(c, typ)
+              }
+
+              typ match {
+                case CCClock =>
+                  values addValue translateClockValue(initValue)
+                case CCDuration =>
+                  values addValue translateDurationValue(initValue)
+                case typ =>
+                  values addValue (typ cast initValue)
+              }
+
+              values addGuard initGuard
             }
-  
-            typ match {
-              case CCClock =>
-                values addValue translateClockValue(initValue)
-              case CCDuration =>
-                values addValue translateDurationValue(initValue)
-              case typ =>
-                values addValue (typ cast initValue)
-            }
-  
-            values addGuard initGuard
           }
         }
 
@@ -881,6 +933,7 @@ class CCReader private (prog : Program,
 
   private def getName(decl : Declarator) : String = decl match {
     case decl : NoPointer => getName(decl.direct_declarator_)
+    case decl : BeginPointer => getName(decl.direct_declarator_)
   }
 
   private def getName(decl : Direct_declarator) : String = decl match {
@@ -1297,6 +1350,11 @@ class CCReader private (prog : Program,
       touchedGlobalState =
         touchedGlobalState || ind < globalVars.size || !freeFromGlobal(t)
     }
+    private def setValue(ind: Int, t : CCExpr) = {
+      values(ind) = t
+      touchedGlobalState =
+        touchedGlobalState || ind < globalVars.size || !freeFromGlobal(t)
+    }
 
     private def getVarType (name: String) = {
       val ind = lookupVar(name)
@@ -1346,6 +1404,7 @@ class CCReader private (prog : Program,
     private def isClockVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar => getValue(exp.cident_).typ == CCClock
       case exp : Eselect => false
+      case exp : Epreop => !exp.unary_operator_.isInstanceOf[Indirection]
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1354,7 +1413,8 @@ class CCReader private (prog : Program,
 
     private def isDurationVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar => getValue(exp.cident_).typ == CCDuration
-      case exp : Eselect => false //added case - zafer
+      case exp : Eselect => false
+      case exp : Epreop => !exp.unary_operator_.isInstanceOf[Indirection]
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1467,15 +1527,26 @@ class CCReader private (prog : Program,
       case exp : Eassign if (exp.assignment_op_.isInstanceOf[Assign]) => {
         evalHelp(exp.exp_2)
         maybeOutputClause
-        setValue(asLValue(exp.exp_1),
-          exp.exp_1 match {
+        val (lhs, lhsType) = exp.exp_1 match{
+          case exp : Epreop => {
+            exp.unary_operator_ match {
+              case _ : Indirection => {
+                val pointer = pointers(asLValue(exp.exp_))
+                (pointer.pointsTo, values(pointer.pointsTo).typ)
+              }
+              case _ => throw new TranslationException(
+                "Can only handle assignments to variables, not " +
+                  (printer print exp))
+            }
+          }
+          case exp : Eselect => (lookupVar(asLValue(exp)), getVarType(exp.cident_))
+          case exp : Evar => (lookupVar(asLValue(exp)), getVarType(exp.cident_))
+        }
+        setValue(lhs,
+          exp.exp_1 match { //todo: handle pointers to structs
           case selExp: Eselect => buildStructTerm(selExp, topVal.asInstanceOf[CCTerm])
           case _ => {
             val rhsType = topVal.typ
-            val lhsType = exp.exp_1 match{
-              case exp: Eselect => getVarType(exp.cident_)
-              case exp: Evar => getVarType(exp.cident_)
-            }
             if(rhsType.isInstanceOf[CCStruct] &&
               lhsType.isInstanceOf[CCStruct]) {
               if(rhsType.asInstanceOf[CCStruct] !=
@@ -1664,14 +1735,28 @@ class CCReader private (prog : Program,
         setValue(asLValue(exp.exp_), lhs)
       }
       case exp : Epreop => {
-        evalHelp(exp.exp_)
         exp.unary_operator_ match {
-//          case _ : Address.     Unary_operator ::= "&" ;
-//          case _ : Indirection. Unary_operator ::= "*" ;
-          case _ : Plus       => // nothing
-          case _ : Negative   => pushVal(popVal mapTerm (-(_)))
+          case _ : Address    => {
+            evalHelp(exp.exp_)
+            /*val pointer = CCPointer(asLValue(exp.exp_))
+            pointers += (pointer.name -> pointer) //todo*/
+          }
+          case _ : Indirection=> { //todo
+            //todo: check if hashmap contains pointer first
+            try {
+              val pointer = pointers(asLValue(exp.exp_))
+              pushVal(values(pointer.pointsTo))
+            }
+            catch {
+              case _: NoSuchElementException => throw new TranslationException(
+                "Trying to dereference a non-pointer: " + asLValue(exp.exp_)
+              )
+            }
+          }
+          case _ : Plus       => evalHelp(exp.exp_)
+          case _ : Negative   => pushVal(eval(exp.exp_) mapTerm (-(_)))
 //          case _ : Complement.  Unary_operator ::= "~" ;
-          case _ : Logicalneg => pushVal(CCFormula(~popVal.toFormula, CCInt))
+          case _ : Logicalneg => pushVal(CCFormula(~eval(exp.exp_).toFormula, CCInt))
         }
       }
 //      case exp : Ebytesexpr.  Exp15 ::= "sizeof" Exp15;
@@ -1720,8 +1805,17 @@ class CCReader private (prog : Program,
           // then we inline the called function
 
           // evaluate the arguments
-          for (e <- exp.listexp_)
+          for (e <- exp.listexp_) {
+            e match {
+              case preop : Epreop => {
+                if(preop.unary_operator_.isInstanceOf[Address])
+                  ptrArgInds enqueue (lookupVar(asLValue(preop.exp_)) +
+                    initPred.arity)
+              }
+              case _ =>
+            }
             evalHelp(e)
+          }
           outputClause
 
           val functionEntry = initPred
@@ -1788,7 +1882,11 @@ class CCReader private (prog : Program,
           inlineFunction(fundef, functionEntry, functionExit)
 
           // reserve an argument for the function result
-          pushFormalVal(getType(fundef))
+          val typ = getType(fundef)
+          if(typ.isInstanceOf[CCVoid.type])
+            addValue(CCFormula(true, CCVoid))
+          else
+            pushFormalVal(typ)
           resetFields(functionExit)
         }
         case None => (functionDecls get name) match {
@@ -1960,7 +2058,7 @@ class CCReader private (prog : Program,
     pushLocalFrame
     val stm = pushArguments(functionDef)
 
-    assert(entry.arity == allFormalVars.size)
+    assert(entry.arity == allFormalVars.size) // todo: fix this
 
     val translator = FunctionTranslator(exit)
     translator.translateWithReturn(stm, entry)
@@ -1982,9 +2080,20 @@ class CCReader private (prog : Program,
             case argDec : OnlyType =>
               // ignore, a void argument implies that there are no arguments
             case argDec : TypeAndParam => {
+              val name = getName(argDec.declarator_)
               val typ = getType(argDec.listdeclaration_specifier_)
-              addLocalVar(typ newConstant getName(argDec.declarator_), typ)
+              argDec.declarator_ match {
+                case ptr: BeginPointer => {
+                  if (!ptr.pointer_.isInstanceOf[Point])
+                    throw new TranslationException("Pointers to " +
+                      "pointers are not supported yet.")
+                  pointers += (name -> CCPointer(name, typ, ptrArgInds.dequeue))
+                }
+                case _ => // nothing
+              }
+              addLocalVar((typ newConstant name), typ)
             }
+
             case argDec : TypeHintAndParam => {
               val typ = getType(argDec.listdeclaration_specifier_)
               addLocalVar(typ newConstant getName(argDec.declarator_), typ)
@@ -1992,13 +2101,13 @@ class CCReader private (prog : Program,
             }
 //            case argDec : Abstract =>
           }
+        assert(ptrArgInds.isEmpty)
 //      case dec : OldFuncDef =>
 //        for (ident <- dec.listcident_)
 //          localVars += new ConstantTerm(ident)
       case dec : OldFuncDec =>
         // arguments are not specified ...
     }
-
     stm
   }
 
