@@ -193,12 +193,8 @@ object CCReader {
                                var pointsTo: Int = -1,
                                var pointsToField: Boolean = false,
                                fieldId: List[Int] = Nil) extends CCType {
-    override def toString :String = "Pointer " + name //todo
-    def unary_* : ITerm = {
-      if(pointsTo < 0) throw new TranslationException("Trying to dereference " +
-        "null pointer: " + name + "!")
-      Int2ITerm(42)
-    }
+    override def toString :String = "pointer " + name + " -> values("
+                                    + pointsTo + ")"
   }
   private case object CCClock extends CCType {
     override def toString : String = "clock"
@@ -341,19 +337,14 @@ class CCReader private (prog : Program,
       case i  => Some(i)
     }
 
-  private def lookupVarNoException(name : String) : Int = //todo: simplify?
+  private def lookupVarNoException(name : String) : Int =
     (localVars lastIndexWhere (_.name == name)) match {
-      case -1 => localPtrs.lastIndexWhere(_.name == name) match {
-        case -1 => {
-          globalVars lastIndexWhere (_.name == name) match {
-            case -1 => globalPtrs.find(_.name == name) match {
-              case Some(ptr) => ptr.pointsTo
-              case None => -1
-            }
-            case i => i
-          }
+      case -1 => getPtrNoException(name) match {
+        case Some(ptr) => ptr.pointsTo
+        case None => globalVars lastIndexWhere (_.name == name) match {
+          case -1 => -1
+          case i => i
         }
-        case i => localPtrs(i).pointsTo
       }
       case i => i + globalVars.size
     }
@@ -365,18 +356,43 @@ class CCReader private (prog : Program,
       case i => i
     }
 
-  private def isPointer(name : String) : Boolean =
-    (localPtrs.indexWhere(_.name == name) > -1) ||
-      (globalPtrs.indexWhere(_.name == name) > -1)
+  private def invalidateLookupCaches{
+    pointerLookupCache.clear()
+  }
 
-  private def getPtr(name : String) : CCPointer =
+  private val pointerLookupCache = new MHashMap[String, CCPointer]
+  private def isPointer(name : String) : Boolean =
+    pointerLookupCache.get(name) match {
+      case Some(ptr) => true
+      case None =>
+        getPtrNoException(name) match {
+          case Some(ptr) => {
+            pointerLookupCache += (name -> ptr)
+            true
+          }
+          case None => false
+        }
+    }
+
+  private def getPtrNoException(name : String) : Option[CCPointer] = {
     localPtrs.lastIndexWhere(_.name == name) match {
       case -1 => globalPtrs.find(_.name == name) match {
-        case Some(ptr) => ptr
+        case Some(ptr) => Some(ptr)
+        case None => None
+      }
+      case i => Some(localPtrs(i))
+    }
+  }
+
+  private def getPtr(name : String) : CCPointer =
+
+    getPtrNoException(name) match {
+        case Some(ptr) => {
+          pointerLookupCache += (name -> ptr)
+          ptr
+        }
         case None => throw new TranslationException(name + "is not a pointer.")
       }
-      case i => localPtrs(i)
-    }
 
   private val localVars = new ArrayBuffer[ConstantTerm]
   private val localPtrs = new ArrayBuffer[CCPointer]
@@ -407,6 +423,7 @@ class CCReader private (prog : Program,
     localPtrs reduceToSize localPtrsFrameStack.pop
     localVarTypes reduceToSize newSize
     variableHints reduceToSize (globalVars.size + newSize)
+    invalidateLookupCaches
   }
 
   private def allFormalVars : Seq[ITerm] =
@@ -807,7 +824,7 @@ class CCReader private (prog : Program,
                     }
                     case _ => throw new TranslationException("pointer " +
                       "initializations can currently only be done by direct " +
-                      "address assignments") //todo
+                      "address assignments") //todo: unary ops would fail
                   }
                 }
                 case _ => throw new TranslationException("List initializers " +
@@ -950,10 +967,11 @@ class CCReader private (prog : Program,
             variableHints(variableHints.size - 1) = hintEls
           }
 
-  // TODO: review below function
-  private def getName(decl : Struct_dec) : String = decl match {
-    case decl : Structen => getName(
-      decl.liststruct_declarator_.iterator.next().asInstanceOf[Decl].declarator_)
+  private def getName(decl: Struct_dec): String =
+    decl.asInstanceOf[Structen].liststruct_declarator_(0) match {
+      case decl : Decl => getName(decl.declarator_)
+      case _ => throw new TranslationException(
+        "Bit fields are not supported yet.")
   }
 
   private def getName(decl : Init_declarator) : String = decl match {
@@ -993,11 +1011,10 @@ class CCReader private (prog : Program,
               yield qual.asInstanceOf[TypeSpec].type_specifier_)
   }
 
-  private def getType(name : Struct_dec) : CCType = name match {
-    case name : Structen =>
-      getType(for (qual <- name.listspec_qual_.iterator;
-                   if (qual.isInstanceOf[TypeSpec]))
-        yield qual.asInstanceOf[TypeSpec].type_specifier_)
+  private def getType(fields : Struct_dec) : CCType = {
+    getType(for (qual <- fields.asInstanceOf[Structen].listspec_qual_.iterator;
+                 if (qual.isInstanceOf[TypeSpec]))
+      yield qual.asInstanceOf[TypeSpec].type_specifier_)
   }
 
   private var anonStructCount = 0
@@ -1021,7 +1038,7 @@ class CCReader private (prog : Program,
       throw new TranslationException(
         "struct " + structName + " is already defined")
 
-    val fields = spec.struct_or_union_spec_ match { //todo: is there a better way?
+    val fields = spec.struct_or_union_spec_ match {
       case dec: Tag => dec.liststruct_dec_
       case dec: Unique => dec.liststruct_dec_
       case _ => throw new TranslationException("struct can only be built" +
@@ -1029,8 +1046,7 @@ class CCReader private (prog : Program,
     }
 
     val fieldList : List[(String, CCType)] = (for ( field <- fields ) yield
-      (getName(field.asInstanceOf[Structen]),
-        getType(field.asInstanceOf[Structen]))).toList  // .asInstanceOf[ArrayBuffer[String]].toList
+      (getName(field), getType(field.asInstanceOf[Structen]))).toList
 
     val ADTFieldList : List[(String, ap.theories.ADT.OtherSort)] =
       for((fieldName, fieldType) <- fieldList)
@@ -1048,7 +1064,7 @@ class CCReader private (prog : Program,
     val initStack = new Stack[ITerm]
     def fillInit(init: Initializer) {
       init match {
-        case init: InitExpr => initStack.push(s.eval(init.exp_).toTerm) //todo correct?
+        case init: InitExpr => initStack.push(s.eval(init.exp_).toTerm)
         case init: InitListOne => fillInits(init.initializers_)
         case init: InitListTwo => fillInits(init.initializers_)
       }
@@ -1092,42 +1108,30 @@ class CCReader private (prog : Program,
               typ = CCULongLong
             case structOrUnion : Tstruct => //does not currently support union
               structOrUnion.struct_or_union_spec_ match {
-                case spec : Tag => // struct definition
-                  val structName = spec.cident_
+                case _ : Tag | _ : Unique => {
+                  val (structName, fields) =
+                    structOrUnion.struct_or_union_spec_ match {
+                    case spec : Tag =>
+                      (spec.cident_, spec.liststruct_dec_)
+                    case spec : Unique =>
+                      (getAnonStructName, spec.liststruct_dec_)
+                  }
                   if (structDefs contains structName)
                     throw new TranslationException(
                       "struct " + structName + " is already defined")
 
-                  val fields = spec.liststruct_dec_
-                  val fieldList : List[(String, CCType)] = (for ( field <- fields ) yield
-                    (getName(field.asInstanceOf[Structen]),
-                      getType(field.asInstanceOf[Structen]))).toList  // .asInstanceOf[ArrayBuffer[String]].toList
+                  val fieldList: List[(String, CCType)] =
+                    (for (field <- fields) yield
+                    (getName(field), getType(field))).toList
 
-                  val ADTFieldList : List[(String, ap.theories.ADT.OtherSort)] =
-                    for((fieldName, fieldType) <- fieldList)
+                  val ADTFieldList: List[(String, ap.theories.ADT.OtherSort)] =
+                    for ((fieldName, fieldType) <- fieldList)
                       yield (fieldName, ADT.OtherSort(fieldType.toSort))
 
                   val structADT =
                     new ADT(List("struct" + structName),
-                      List((structName, ADT.CtorSignature(ADTFieldList, ADT.ADTSort(0)))))
-
-                  val newStruct = CCStruct(structADT, structName, fieldList)
-                  structDefs += (structName -> newStruct)
-                  typ = newStruct
-                case spec : Unique => { // TODO refactor to reuse struct creation code
-                  val structName = getAnonStructName
-                  val fields = spec.liststruct_dec_
-                  val fieldList : List[(String, CCType)] = (for ( field <- fields ) yield
-                    (getName(field.asInstanceOf[Structen]),
-                      getType(field.asInstanceOf[Structen]))).toList  // .asInstanceOf[ArrayBuffer[String]].toList
-
-                  val ADTFieldList : List[(String, ap.theories.ADT.OtherSort)] =
-                    for((fieldName, fieldType) <- fieldList)
-                      yield (fieldName, ADT.OtherSort(fieldType.toSort))
-
-                  val structADT =
-                    new ADT(List("struct" + structName),
-                      List((structName, ADT.CtorSignature(ADTFieldList, ADT.ADTSort(0)))))
+                      List((structName, ADT.CtorSignature(
+                        ADTFieldList, ADT.ADTSort(0)))))
 
                   val newStruct = CCStruct(structADT, structName, fieldList)
                   structDefs += (structName -> newStruct)
@@ -1138,8 +1142,8 @@ class CCReader private (prog : Program,
                   typ = structDefs.get(structName) match {
                     case Some(struct) => struct
                     case None => throw new TranslationException(
-                      "struct " + structName + " is used without being defined first! " +
-                        "(Forward declarations are not supported yet.)")
+                    "struct " + structName + " is used without being defined " +
+                     "first! Forward declarations are not supported yet.)")
                   }
               }
             case _ : Tclock => {
@@ -1395,7 +1399,7 @@ class CCReader private (prog : Program,
     // the top parent is at the bottom of the stack.
     private def getParentTypes(exp: Exp) : Stack[CCStruct] = {
       val typeStack = new Stack[CCStruct]
-      fillParentTypes(exp.asInstanceOf[Eselect].exp_) //fills a stack bottom-up (top value is parent type)
+      fillParentTypes(exp.asInstanceOf[Eselect].exp_) //fills a stack bottom-up
       def fillParentTypes(expField: Exp) : CCType = {
         val thisType = expField match {
           case nested: Eselect => {
@@ -1411,8 +1415,6 @@ class CCReader private (prog : Program,
       }
       typeStack
     }
-
-
 
     def getValues : Seq[CCExpr] =
       values.toList
@@ -1771,7 +1773,7 @@ class CCReader private (prog : Program,
       case exp : Epreop => {
         evalHelp(exp.exp_)
         exp.unary_operator_ match {
-          case _ : Address    => // todo: nothing?
+          case _ : Address    => // nothing
           case _ : Indirection=> // nothing
           case _ : Plus       => // nothing
           case _ : Negative   => pushVal(popVal mapTerm (-(_)))
@@ -1832,7 +1834,7 @@ class CCReader private (prog : Program,
                 if(preop.unary_operator_.isInstanceOf[Address])
                   ptrArgInds enqueue lookupVar(argName)
               case _ => {
-                if (isPointer(argName)) // todo: a lot of redundancy here
+                if (isPointer(argName))
                   ptrArgInds enqueue lookupVar(argName)
                 else evalHelp(e)
               }
@@ -1844,7 +1846,7 @@ class CCReader private (prog : Program,
 
           // get rid of the local variables, which are later
           // replaced with the formal arguments
-          for (e <- exp.listexp_) //todo: optimize
+          for (e <- exp.listexp_)
             e match {
               case unary: Epreop =>
                 if (!unary.unary_operator_.isInstanceOf[Address]) popVal

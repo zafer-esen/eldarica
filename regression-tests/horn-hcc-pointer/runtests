@@ -1,0 +1,12 @@
+#!/bin/sh
+
+LAZABS=../../eld
+
+TESTS="basic.hcc"
+
+for name in $TESTS; do
+    echo
+    echo $name
+    $LAZABS -cex -abstract:off "$@" $name 2>&1 | grep -v 'at '
+done
+
