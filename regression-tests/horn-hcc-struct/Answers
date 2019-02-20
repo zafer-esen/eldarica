@@ -6,6 +6,9 @@ SAFE
 assign.hcc
 SAFE
 
+assign-exp-eval-order.hcc
+SAFE
+
 assign-illegal.hcc
 lazabs.horn.concurrency.CCReader$TranslationException: Cannot assign struct S1: ((x,int)) to struct S2: ((x,int))!
 (error "Cannot assign struct S1: ((x,int)) to struct S2: ((x,int))!")

@@ -190,8 +190,8 @@ object CCReader {
   }
   private case class CCPointer(name: String,
                                typ: CCType,
-                               pointsTo: Int = -1,
-                               pointsToField: Boolean = false,
+                               var pointsTo: Int = -1,
+                               var pointsToField: Boolean = false,
                                fieldId: List[Int] = Nil) extends CCType {
     override def toString :String = "Pointer " + name //todo
     def unary_* : ITerm = {
@@ -333,6 +333,7 @@ class CCReader private (prog : Program,
   private val globalVarTypes = new ArrayBuffer[CCType]
   private val globalVarsInit = new ArrayBuffer[CCExpr]
   private var globalPreconditions : IFormula = true
+  private val globalPtrs = new ArrayBuffer[CCPointer]
 
   private def globalVarIndex(name : String) : Option[Int] =
     (globalVars indexWhere (_.name == name)) match {
@@ -340,23 +341,48 @@ class CCReader private (prog : Program,
       case i  => Some(i)
     }
 
-  private def lookupVarNoException(name : String) : Int =
+  private def lookupVarNoException(name : String) : Int = //todo: simplify?
     (localVars lastIndexWhere (_.name == name)) match {
-      case -1 => globalVars lastIndexWhere (_.name == name)
-      case i  => i + globalVars.size
+      case -1 => localPtrs.lastIndexWhere(_.name == name) match {
+        case -1 => {
+          globalVars lastIndexWhere (_.name == name) match {
+            case -1 => globalPtrs.find(_.name == name) match {
+              case Some(ptr) => ptr.pointsTo
+              case None => -1
+            }
+            case i => i
+          }
+        }
+        case i => localPtrs(i).pointsTo
+      }
+      case i => i + globalVars.size
     }
 
   private def lookupVar(name : String) : Int =
     lookupVarNoException(name) match {
-      case -1 =>
-        throw new TranslationException(
-                      "Symbol " + name + " is not declared")
+      case -1 => throw new TranslationException(
+        "Symbol " + name + " is not declared")
       case i => i
     }
 
+  private def isPointer(name : String) : Boolean =
+    (localPtrs.indexWhere(_.name == name) > -1) ||
+      (globalPtrs.indexWhere(_.name == name) > -1)
+
+  private def getPtr(name : String) : CCPointer =
+    localPtrs.lastIndexWhere(_.name == name) match {
+      case -1 => globalPtrs.find(_.name == name) match {
+        case Some(ptr) => ptr
+        case None => throw new TranslationException(name + "is not a pointer.")
+      }
+      case i => localPtrs(i)
+    }
+
   private val localVars = new ArrayBuffer[ConstantTerm]
+  private val localPtrs = new ArrayBuffer[CCPointer]
   private val localVarTypes = new ArrayBuffer[CCType]
   private val localFrameStack = new Stack[Int]
+  private val localPtrsFrameStack = new Stack[Int]
 
   private def addLocalVar(c : ConstantTerm, t : CCType) = {
     localVars += c
@@ -371,11 +397,14 @@ class CCReader private (prog : Program,
            localVarTypes.size == localVars.size)
   }
 
-  private def pushLocalFrame =
+  private def pushLocalFrame = {
     localFrameStack push localVars.size
+    localPtrsFrameStack push localPtrs.size
+  }
   private def popLocalFrame = {
     val newSize = localFrameStack.pop
     localVars reduceToSize newSize
+    localPtrs reduceToSize localPtrsFrameStack.pop
     localVarTypes reduceToSize newSize
     variableHints reduceToSize (globalVars.size + newSize)
   }
@@ -425,7 +454,6 @@ class CCReader private (prog : Program,
   private val functionDefs  = new MHashMap[String, Function_def]
   private val functionDecls = new MHashMap[String, (Direct_declarator, CCType)]
   private val structDefs    = new MHashMap[String, CCStruct]
-  private val pointers      = new MHashMap[String, CCPointer]
   private val ptrArgInds    = new Queue[Int]
 
   //////////////////////////////////////////////////////////////////////////////
@@ -707,8 +735,10 @@ class CCReader private (prog : Program,
               case initDecl : HintDecl => initDecl.declarator_
             }
             val name = getName(declarator)
-            if (declarator.isInstanceOf[BeginPointer])
-              pointers += (name -> CCPointer(name, typ))
+            if (declarator.isInstanceOf[BeginPointer]) {
+              val ptr = CCPointer(name, typ)
+              if (global) globalPtrs += ptr else localPtrs += ptr
+            }
             else {
               val directDecl =
                 declarator.asInstanceOf[NoPointer].direct_declarator_
@@ -760,20 +790,19 @@ class CCReader private (prog : Program,
                 case _ => throw new TranslationException("Pointer qualifiers " +
                   "and pointers to pointers are not supported yet.")
               }
-              val pointerName = getName(declarator)
+              val ptrName = getName(declarator)
               initializer match {
                 case init: InitExpr => {
                   init.exp_ match {
                     case preop: Epreop => {
-                      val referenceName = (preop.exp_.asInstanceOf[Evar].cident_) //todo: fix this part
+                      val refName = (preop.exp_.asInstanceOf[Evar].cident_) //todo: fix this part
                       preop.unary_operator_ match {
                         case _: Address => {
-                          val pointer = CCPointer(pointerName, typ, lookupVar(referenceName)) //add suport for struct fields
-                          pointers += (pointer.name -> pointer)
-                          println("Added new pointer: " + pointer.name + " -> " + referenceName)
+                          val ptr = CCPointer(ptrName, typ, lookupVar(refName)) //add suport for struct fields
+                          if (global) globalPtrs += ptr else localPtrs += ptr
                         }
                         case _ => throw new TranslationException("Trying to " +
-                          "assign a non-address to pointer " + pointerName)
+                          "assign a non-address to pointer " + ptrName)
                       }
                     }
                     case _ => throw new TranslationException("pointer " +
@@ -1395,6 +1424,7 @@ class CCReader private (prog : Program,
     private def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
       case exp : Eselect => asLValue(exp.exp_)
+      case exp : Epreop => asLValue(exp.exp_)
       case exp =>
         throw new TranslationException(
                     "Can only handle assignments to variables, not " +
@@ -1402,7 +1432,9 @@ class CCReader private (prog : Program,
     }
 
     private def isClockVariable(exp : Exp) : Boolean = exp match {
-      case exp : Evar => getValue(exp.cident_).typ == CCClock
+      case exp : Evar =>
+        if (isPointer(exp.cident_)) false // todo pointers to clock vars allowed?
+        else getValue(exp.cident_).typ == CCClock
       case exp : Eselect => false
       case exp : Epreop => !exp.unary_operator_.isInstanceOf[Indirection]
       case exp =>
@@ -1412,7 +1444,9 @@ class CCReader private (prog : Program,
     }
 
     private def isDurationVariable(exp : Exp) : Boolean = exp match {
-      case exp : Evar => getValue(exp.cident_).typ == CCDuration
+      case exp : Evar =>
+        if (isPointer(exp.cident_)) false //todo pointers to duration vars allowed?
+        else getValue(exp.cident_).typ == CCDuration
       case exp : Eselect => false
       case exp : Epreop => !exp.unary_operator_.isInstanceOf[Indirection]
       case exp =>
@@ -1527,36 +1561,36 @@ class CCReader private (prog : Program,
       case exp : Eassign if (exp.assignment_op_.isInstanceOf[Assign]) => {
         evalHelp(exp.exp_2)
         maybeOutputClause
-        val (lhs, lhsType) = exp.exp_1 match{
-          case exp : Epreop => {
-            exp.unary_operator_ match {
-              case _ : Indirection => {
-                val pointer = pointers(asLValue(exp.exp_))
-                (pointer.pointsTo, values(pointer.pointsTo).typ)
-              }
-              case _ => throw new TranslationException(
-                "Can only handle assignments to variables, not " +
-                  (printer print exp))
+        var ptrUpdated = false
+        exp.exp_2 match {
+          case preop : Epreop =>
+            if (preop.unary_operator_.isInstanceOf[Address]) {
+              getPtr(asLValue(exp.exp_1)).pointsTo = // todo: deal with fields too
+                lookupVar(asLValue(preop.exp_))
+              ptrUpdated = true
             }
-          }
-          case exp : Eselect => (lookupVar(asLValue(exp)), getVarType(exp.cident_))
-          case exp : Evar => (lookupVar(asLValue(exp)), getVarType(exp.cident_))
+          case _ => // nothing
         }
-        setValue(lhs,
-          exp.exp_1 match { //todo: handle pointers to structs
-          case selExp: Eselect => buildStructTerm(selExp, topVal.asInstanceOf[CCTerm])
-          case _ => {
-            val rhsType = topVal.typ
-            if(rhsType.isInstanceOf[CCStruct] &&
-              lhsType.isInstanceOf[CCStruct]) {
-              if(rhsType.asInstanceOf[CCStruct] !=
-                lhsType.asInstanceOf[CCStruct])
-                throw new TranslationException("Cannot assign " + rhsType +
-                  " to " + lhsType + "!")
-            }
-            topVal
-          }
-        })
+        if(!ptrUpdated)
+          setValue(asLValue(exp.exp_1), // todo: clean up
+            exp.exp_1 match {
+              case selExp: Eselect => buildStructTerm(selExp, topVal.asInstanceOf[CCTerm])
+              case _ => {
+                val rhsType = topVal.typ
+                val lhsType = exp.exp_1 match {
+                  case exp: Eselect => getVarType(exp.cident_)
+                  case _ => getVarType(asLValue(exp.exp_1))
+                }
+                if (rhsType.isInstanceOf[CCStruct] &&
+                  lhsType.isInstanceOf[CCStruct]) {
+                  if (rhsType.asInstanceOf[CCStruct] !=
+                    lhsType.asInstanceOf[CCStruct])
+                    throw new TranslationException("Cannot assign " + rhsType +
+                      " to " + lhsType + "!")
+                }
+                topVal
+              }
+            })
       }
       case exp : Eassign => {
         evalHelp(exp.exp_1)
@@ -1735,28 +1769,14 @@ class CCReader private (prog : Program,
         setValue(asLValue(exp.exp_), lhs)
       }
       case exp : Epreop => {
+        evalHelp(exp.exp_)
         exp.unary_operator_ match {
-          case _ : Address    => {
-            evalHelp(exp.exp_)
-            /*val pointer = CCPointer(asLValue(exp.exp_))
-            pointers += (pointer.name -> pointer) //todo*/
-          }
-          case _ : Indirection=> { //todo
-            //todo: check if hashmap contains pointer first
-            try {
-              val pointer = pointers(asLValue(exp.exp_))
-              pushVal(values(pointer.pointsTo))
-            }
-            catch {
-              case _: NoSuchElementException => throw new TranslationException(
-                "Trying to dereference a non-pointer: " + asLValue(exp.exp_)
-              )
-            }
-          }
-          case _ : Plus       => evalHelp(exp.exp_)
-          case _ : Negative   => pushVal(eval(exp.exp_) mapTerm (-(_)))
+          case _ : Address    => // todo: nothing?
+          case _ : Indirection=> // nothing
+          case _ : Plus       => // nothing
+          case _ : Negative   => pushVal(popVal mapTerm (-(_)))
 //          case _ : Complement.  Unary_operator ::= "~" ;
-          case _ : Logicalneg => pushVal(CCFormula(~eval(exp.exp_).toFormula, CCInt))
+          case _ : Logicalneg => pushVal(CCFormula(~popVal.toFormula, CCInt))
         }
       }
 //      case exp : Ebytesexpr.  Exp15 ::= "sizeof" Exp15;
@@ -1806,15 +1826,17 @@ class CCReader private (prog : Program,
 
           // evaluate the arguments
           for (e <- exp.listexp_) {
+            val argName = asLValue(e) //todo: what about fields/constants etc?
             e match {
-              case preop : Epreop => {
+              case preop : Epreop =>
                 if(preop.unary_operator_.isInstanceOf[Address])
-                  ptrArgInds enqueue (lookupVar(asLValue(preop.exp_)) +
-                    initPred.arity)
+                  ptrArgInds enqueue lookupVar(argName)
+              case _ => {
+                if (isPointer(argName)) // todo: a lot of redundancy here
+                  ptrArgInds enqueue lookupVar(argName)
+                else evalHelp(e)
               }
-              case _ =>
             }
-            evalHelp(e)
           }
           outputClause
 
@@ -1822,9 +1844,12 @@ class CCReader private (prog : Program,
 
           // get rid of the local variables, which are later
           // replaced with the formal arguments
-          for (e <- exp.listexp_)
-            popVal
-
+          for (e <- exp.listexp_) //todo: optimize
+            e match {
+              case unary: Epreop =>
+                if (!unary.unary_operator_.isInstanceOf[Address]) popVal
+              case _ => if (!isPointer(asLValue(e))) popVal
+            }
           callFunctionInlining(name, functionEntry)
         }
       }
@@ -1875,16 +1900,21 @@ class CCReader private (prog : Program,
 
     private def callFunctionInlining(name : String,
                                      functionEntry : Predicate) = {
-      val functionExit = newPred(1)
+
 
       (functionDefs get name) match {
         case Some(fundef) => {
-          inlineFunction(fundef, functionEntry, functionExit)
+          val typ = getType(fundef)
+          val isNoReturn = (typ.isInstanceOf[CCVoid.type])
+          val extraArgs = if (isNoReturn) 0 else 1
+          val functionExit = newPred(extraArgs)
+
+          inlineFunction(fundef, functionEntry, functionExit, isNoReturn)
 
           // reserve an argument for the function result
-          val typ = getType(fundef)
+
           if(typ.isInstanceOf[CCVoid.type])
-            addValue(CCFormula(true, CCVoid))
+            pushFormalVal(CCInt)
           else
             pushFormalVal(typ)
           resetFields(functionExit)
@@ -2054,15 +2084,16 @@ class CCReader private (prog : Program,
 
   private def inlineFunction(functionDef : Function_def,
                              entry : Predicate,
-                             exit : Predicate) : Unit = {
+                             exit : Predicate,
+                             isNoReturn : Boolean) : Unit = {
     pushLocalFrame
     val stm = pushArguments(functionDef)
 
-    assert(entry.arity == allFormalVars.size) // todo: fix this
+    assert(entry.arity == allFormalVars.size)
 
     val translator = FunctionTranslator(exit)
-    translator.translateWithReturn(stm, entry)
-
+    if (isNoReturn) translator.translateNoReturn(stm, entry)
+    else translator.translateWithReturn(stm, entry)
     popLocalFrame
   }
 
@@ -2087,11 +2118,10 @@ class CCReader private (prog : Program,
                   if (!ptr.pointer_.isInstanceOf[Point])
                     throw new TranslationException("Pointers to " +
                       "pointers are not supported yet.")
-                  pointers += (name -> CCPointer(name, typ, ptrArgInds.dequeue))
+                  localPtrs += CCPointer(name, typ, ptrArgInds.dequeue)
                 }
-                case _ => // nothing
+                case _ => addLocalVar((typ newConstant name), typ)
               }
-              addLocalVar((typ newConstant name), typ)
             }
 
             case argDec : TypeHintAndParam => {
@@ -2134,6 +2164,18 @@ class CCReader private (prog : Program,
 
     def translateNoReturn(compound : Compound_stm) : Unit = {
       translateWithEntryClause(compound, newPred)
+      postProcessClauses
+    }
+
+    def translateNoReturn(compound : Compound_stm,
+                          entry : Predicate) : Unit = {
+      val finalPred = newPred
+      translate(compound, entry, finalPred)
+      // add a default return edge
+      val rp = returnPred.get
+      output(Clause(atom(rp, allFormalVars take rp.arity),
+        List(atom(finalPred, allFormalVars)),
+        true))
       postProcessClauses
     }
 
