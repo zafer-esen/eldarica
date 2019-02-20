@@ -356,22 +356,34 @@ class CCReader private (prog : Program,
       case i => i
     }
 
-  private def invalidateLookupCaches{
+  private def invalidatePointerLookupCaches{
     pointerLookupCache.clear()
+    isPointerCache.clear()
   }
 
   private val pointerLookupCache = new MHashMap[String, CCPointer]
+  private val isPointerCache = new MHashMap[String, Boolean]
   private def isPointer(name : String) : Boolean =
-    pointerLookupCache.get(name) match {
-      case Some(ptr) => true
-      case None =>
-        getPtrNoException(name) match {
-          case Some(ptr) => {
-            pointerLookupCache += (name -> ptr)
-            true
-          }
-          case None => false
+    isPointerCache.get(name) match {
+      case Some(res) => res
+      case None => pointerLookupCache.get(name) match {
+        case Some(ptr) => {
+          isPointerCache += (name -> true)
+          true
         }
+        case None =>
+          getPtrNoException(name) match {
+            case Some(ptr) => {
+              pointerLookupCache += (name -> ptr)
+              isPointerCache += (name -> true)
+              true
+            }
+            case None => {
+              isPointerCache += (name -> false)
+              false
+            }
+          }
+      }
     }
 
   private def getPtrNoException(name : String) : Option[CCPointer] = {
@@ -416,6 +428,7 @@ class CCReader private (prog : Program,
   private def pushLocalFrame = {
     localFrameStack push localVars.size
     localPtrsFrameStack push localPtrs.size
+    invalidatePointerLookupCaches
   }
   private def popLocalFrame = {
     val newSize = localFrameStack.pop
@@ -423,7 +436,7 @@ class CCReader private (prog : Program,
     localPtrs reduceToSize localPtrsFrameStack.pop
     localVarTypes reduceToSize newSize
     variableHints reduceToSize (globalVars.size + newSize)
-    invalidateLookupCaches
+    invalidatePointerLookupCaches
   }
 
   private def allFormalVars : Seq[ITerm] =
