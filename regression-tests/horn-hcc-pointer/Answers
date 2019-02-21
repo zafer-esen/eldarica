@@ -25,3 +25,12 @@ Init:
 Final:
  main14(.AS0(1, .AS1(5, .AS2(6))), .AS0(4, .AS1(2, .AS2(3)))) 
 --------------------------------------------------------------
+
+unary.hcc
+SAFE
+
+unary-struct.hcc
+SAFE
+
+unary-struct-nested.hcc
+SAFE

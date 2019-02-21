@@ -874,10 +874,19 @@ class CCReader private (prog : Program,
                 case init: InitExpr => {
                   init.exp_ match {
                     case preop: Epreop => {
-                      val refName = (preop.exp_.asInstanceOf[Evar].cident_) //todo: fix this part
+                      val refName = values.asLValue(preop)
                       preop.unary_operator_ match {
                         case _: Address => {
-                          val ptr = CCPointer(ptrName, typ, lookupVar(refName)) //add suport for struct fields
+                          val ptr = preop.exp_ match { //todo: redundancy here with Eassign and too complicated
+                            case field: Eselect => {
+                              val ind = lookupVar(refName)
+                              val s = allFormalVarTypes(ind).asInstanceOf[CCStruct] //todo: might be wrong
+                              CCPointer(ptrName, typ, lookupVar(refName),
+                                true, s.getNestedFieldIndices(
+                                  values.getFullFieldName(field)))
+                            }
+                            case _ => CCPointer(ptrName, typ, lookupVar(refName))
+                          }
                           if (global) globalPtrs += ptr else localPtrs += ptr
                         }
                         case _ => throw new TranslationException("Trying to " +
@@ -886,11 +895,11 @@ class CCReader private (prog : Program,
                     }
                     case _ => throw new TranslationException("pointer " +
                       "initializations can currently only be done by direct " +
-                      "address assignments") //todo: unary ops would fail
+                      "address assignments")
                   }
                 }
                 case _ => throw new TranslationException("List initializers " +
-                  "with pointers are not supported.") //todo
+                  "with pointers are not supported.")
               }
             }
             else {
@@ -1496,7 +1505,7 @@ class CCReader private (prog : Program,
 
     def asAtom(pred : Predicate) = atom(pred, getValuesAsTerms)
 
-    private def asLValue(exp : Exp) : String = exp match {
+    def asLValue(exp : Exp) : String = exp match {
       case exp : Evar => exp.cident_
       case exp : Eselect => asLValue(exp.exp_)
       case exp : Epreop => asLValue(exp.exp_)
@@ -1616,7 +1625,7 @@ class CCReader private (prog : Program,
 
     // todo: maybe a better solution than below?
     // returns a list containing a path of names to the given field
-    private def getFullFieldName(field: Exp) : List[String] = {
+    def getFullFieldName(field: Exp) : List[String] = {
       val resStack = new Stack[String]
       getFullFieldName(field, resStack)
       resStack.toList
@@ -1868,21 +1877,44 @@ class CCReader private (prog : Program,
         evalHelp(exp.exp_)
         maybeOutputClause
         pushVal(popVal mapTerm (_ + 1))
+        val lhsName = asLValue(exp.exp_)
         val lhs = exp.exp_ match {
           case field: Eselect => buildStructTerm(field, topVal)
-          case _ => topVal
+          case _ => {
+            if (isPointer(lhsName) && getPtr(lhsName).pointsToField) {
+              val ptr = getPtr(lhsName)
+              val ref = values(ptr.pointsTo)
+              val refType = ref.typ.asInstanceOf[CCStruct]
+              CCTerm(refType.setFieldTerm(
+                ref.toTerm, topVal.toTerm, ptr.fieldId),
+                ref.typ)
+            }
+            else topVal
+          }
         }
-        setValue(asLValue(exp.exp_), lhs)
+        setValue(lhsName, lhs)
       }
+
       case exp : Epredec => {
         evalHelp(exp.exp_)
         maybeOutputClause
         pushVal(popVal mapTerm (_ - 1))
+        val lhsName = asLValue(exp.exp_)
         val lhs = exp.exp_ match {
           case field: Eselect => buildStructTerm(field, topVal)
-          case _ => topVal
+          case _ => {
+            if (isPointer(lhsName) && getPtr(lhsName).pointsToField) {
+              val ptr = getPtr(lhsName)
+              val ref = values(ptr.pointsTo)
+              val refType = ref.typ.asInstanceOf[CCStruct]
+              CCTerm(refType.setFieldTerm(
+                ref.toTerm, topVal.toTerm, ptr.fieldId),
+                ref.typ)
+            }
+            else topVal
+          }
         }
-        setValue(asLValue(exp.exp_), lhs)
+        setValue(lhsName, lhs)
       }
       case exp : Epreop => {
         evalHelp(exp.exp_)
@@ -2001,19 +2033,41 @@ class CCReader private (prog : Program,
       case exp : Epostinc => {
         evalHelp(exp.exp_)
         maybeOutputClause
-        setValue(asLValue(exp.exp_),
+        val lhsName = asLValue(exp.exp_)
+        setValue(lhsName,
           exp.exp_ match {
             case field: Eselect => buildStructTerm(field, topVal mapTerm (_ + 1))
-            case _ => topVal mapTerm (_ + 1)
+            case _ => {
+              if (isPointer(lhsName) && getPtr(lhsName).pointsToField) {
+                val ptr = getPtr(lhsName)
+                val ref = values(ptr.pointsTo)
+                val refType = ref.typ.asInstanceOf[CCStruct]
+                CCTerm(refType.setFieldTerm(
+                  ref.toTerm, (topVal mapTerm (_ + 1)).toTerm, ptr.fieldId),
+                  ref.typ)
+              }
+              else topVal mapTerm (_ + 1)
+            }
           })
       }
       case exp : Epostdec => {
         evalHelp(exp.exp_)
         maybeOutputClause
-        setValue(asLValue(exp.exp_),
+        val lhsName = asLValue(exp.exp_)
+          setValue(lhsName,
           exp.exp_ match {
             case field: Eselect => buildStructTerm(field, topVal mapTerm (_ - 1))
-            case _ => topVal mapTerm (_ - 1)
+            case _ => {
+              if (isPointer(lhsName) && getPtr(lhsName).pointsToField) {
+                val ptr = getPtr(lhsName)
+                val ref = values(ptr.pointsTo)
+                val refType = ref.typ.asInstanceOf[CCStruct]
+                CCTerm(refType.setFieldTerm(
+                  ref.toTerm, (topVal mapTerm (_ - 1)).toTerm, ptr.fieldId),
+                  ref.typ)
+              }
+              else topVal mapTerm (_ - 1)
+            }
           })
       }
       case exp : Evar =>
