@@ -17,15 +17,12 @@ void main() {
     int a = 3;
     int b = 42;
     swap(&a, &b);
-    assert(a == 42);
-    assert(b == 3);
+    assert(a == 42 && b == 3);
 
     int *x, *y = &b; //local *x and *y shadows the global ones
     x = &a;
     swap(x, y);
-    assert(a == 3);
-    assert(b == 42);
-    assert(*x == 3);
-    assert(*y == 42);
+    assert(a == 3 && b == 42);
+    assert(*y == 42 && *x == 3);
 }
 

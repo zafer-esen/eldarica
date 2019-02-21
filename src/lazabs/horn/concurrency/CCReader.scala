@@ -152,8 +152,55 @@ object CCReader {
     override def toString : String =
       "struct " + name + ": (" +fields.mkString + ")"
     def getFieldIndex(name: String) =  fields.indexWhere(_._1 == name)
+    def getNestedFieldIndices (nestedName: List[String]) : List[Int] =
+      nestedName match{
+        case hd::Nil => getFieldIndex(hd) :: Nil
+        case hd::tl => {
+          val ind = getFieldIndex(hd)
+          val typ = getFieldType(ind).asInstanceOf[CCStruct]
+          ind :: typ.getNestedFieldIndices(tl)
+        }
+        case Nil => Nil // not possible to reach
+      }
     def getFieldType(ind: Int) = fields(ind)._2
+    def getFieldType(fieldIndices: List[Int]) : CCType =
+      fieldIndices match{
+        case hd::Nil => getFieldType(hd)
+        case hd::tl => getFieldType(hd).asInstanceOf[CCStruct].getFieldType(tl)
+        case Nil => throw new TranslationException("Field type requested with" +
+          "empty field index!")
+      }
+
     def contains(fieldName: String) = getFieldIndex(fieldName) != -1
+    def getFieldTerm(t: ITerm, fieldIndices: List[Int]) : ITerm = {
+      val hd :: tl = fieldIndices
+      val sel = getADTSelector(hd)
+      getFieldType(hd) match {
+        case nested: CCStruct =>
+          nested.getFieldTerm(sel(t), tl)
+        case _ => sel(t)
+      }
+    }
+    def setFieldTerm(rootTerm: ITerm, setVal: ITerm,
+                     fieldIndices: List[Int]) : ITerm =
+      fieldIndices match {
+        case hd :: tl => {
+          val childTerm = getFieldType(hd) match {
+            case nx: CCStruct => nx.setFieldTerm(
+              getADTSelector(hd)(rootTerm), setVal, tl)
+            case _ => setVal
+          }
+          val const =
+            for (n <- fields.indices) yield {
+              if (n == hd) childTerm
+              else getADTSelector(n)(rootTerm)
+            }
+          adt.constructors.head(const: _*).asInstanceOf[ITerm]
+        }
+        case Nil => throw new TranslationException("setFieldTerm called with" +
+          "empty List!")
+      }
+
     def getADTSelector(ind: Int) = {
       if(ind < 0)
         throw new TranslationException(
@@ -192,9 +239,9 @@ object CCReader {
                                typ: CCType,
                                var pointsTo: Int = -1,
                                var pointsToField: Boolean = false,
-                               fieldId: List[Int] = Nil) extends CCType {
-    override def toString :String = "pointer " + name + " -> values("
-                                    + pointsTo + ")"
+                               var fieldId: List[Int] = Nil) extends CCType {
+    override def toString :String = "pointer " + name +
+      " -> values(" + pointsTo + ")"
   }
   private case object CCClock extends CCType {
     override def toString : String = "clock"
@@ -397,13 +444,15 @@ class CCReader private (prog : Program,
   }
 
   private def getPtr(name : String) : CCPointer =
-
-    getPtrNoException(name) match {
-        case Some(ptr) => {
-          pointerLookupCache += (name -> ptr)
-          ptr
+    pointerLookupCache.get(name) match {
+      case Some(ptr) => ptr
+      case None => getPtrNoException(name) match {
+          case Some(ptr) => {
+            pointerLookupCache += (name -> ptr)
+            ptr
+          }
+          case None => throw new TranslationException(name + "is not a pointer.")
         }
-        case None => throw new TranslationException(name + "is not a pointer.")
       }
 
   private val localVars = new ArrayBuffer[ConstantTerm]
@@ -484,7 +533,7 @@ class CCReader private (prog : Program,
   private val functionDefs  = new MHashMap[String, Function_def]
   private val functionDecls = new MHashMap[String, (Direct_declarator, CCType)]
   private val structDefs    = new MHashMap[String, CCStruct]
-  private val ptrArgInds    = new Queue[Int]
+  private val ptrArgQueue    = new Queue[CCPointer]
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -1388,6 +1437,17 @@ class CCReader private (prog : Program,
       touchedGlobalState = touchedGlobalState || !freeFromGlobal(t)
     }
 
+    private def getPtrValue(name : String) : CCExpr= {
+      val ptr = getPtr(name)
+      val ref = values(ptr.pointsTo)
+      if(ptr.pointsToField) {
+        val structType = ref.typ.asInstanceOf[CCStruct]
+        CCTerm(structType.getFieldTerm(ref.toTerm, ptr.fieldId),
+          structType.getFieldType(ptr.fieldId))
+      }
+      else ref
+    }
+
     private def getValue(name : String) =
       values(lookupVar(name))
     private def setValue(name : String, t : CCExpr) = {
@@ -1554,6 +1614,25 @@ class CCReader private (prog : Program,
       buildStructTerm(field.exp_, fieldName, rhs, parentStack)
     }
 
+    // todo: maybe a better solution than below?
+    // returns a list containing a path of names to the given field
+    private def getFullFieldName(field: Exp) : List[String] = {
+      val resStack = new Stack[String]
+      getFullFieldName(field, resStack)
+      resStack.toList
+    }
+    private def getFullFieldName(field: Exp,
+                                 res: Stack[String]) {
+      field match {
+        case sel: Eselect => {
+          res.push(sel.cident_)
+          getFullFieldName(sel.exp_, res)
+        }
+        case _ => // nothing
+      }
+    }
+
+
     private def evalHelp(exp : Exp) : Unit = exp match {
       case exp : Ecomma => {
         evalHelp(exp.exp_1)
@@ -1574,36 +1653,58 @@ class CCReader private (prog : Program,
         setValue(asLValue(exp.exp_1), translateDurationValue(topVal))
       }
       case exp : Eassign if (exp.assignment_op_.isInstanceOf[Assign]) => {
-        evalHelp(exp.exp_2)
+        evalHelp(exp.exp_2) //evalate rhs and push
         maybeOutputClause
         var ptrUpdated = false
-        exp.exp_2 match {
+        exp.exp_2 match {   //match rhs     *x = *y
           case preop : Epreop =>
             if (preop.unary_operator_.isInstanceOf[Address]) {
-              getPtr(asLValue(exp.exp_1)).pointsTo = // todo: deal with fields too
-                lookupVar(asLValue(preop.exp_))
+              val ptr = getPtr(asLValue(exp.exp_1))
+              ptr.pointsTo = lookupVar(asLValue(preop.exp_))
+              preop.exp_ match {
+                case field: Eselect => {
+                  val structType =
+                    values(ptr.pointsTo).typ.asInstanceOf[CCStruct]
+                    ptr.pointsToField = true
+                    ptr.fieldId = structType.getNestedFieldIndices(
+                      getFullFieldName(field))
+                }
+                case _ => // nothing
+              }
               ptrUpdated = true
             }
-          case _ => // nothing
+          case _ => // todo: nothing? what if rhs is a previously declared pointer
         }
+        val lhsName = asLValue(exp.exp_1)
         if(!ptrUpdated)
-          setValue(asLValue(exp.exp_1), // todo: clean up
+          setValue(lhsName, // todo: clean up
             exp.exp_1 match {
-              case selExp: Eselect => buildStructTerm(selExp, topVal.asInstanceOf[CCTerm])
+              case selExp: Eselect => buildStructTerm(
+                selExp, topVal.asInstanceOf[CCTerm])
               case _ => {
-                val rhsType = topVal.typ
-                val lhsType = exp.exp_1 match {
-                  case exp: Eselect => getVarType(exp.cident_)
-                  case _ => getVarType(asLValue(exp.exp_1))
+                if (isPointer(lhsName) && getPtr(lhsName).pointsToField){
+                  val ptr = getPtr(lhsName)
+                  val ref = values(ptr.pointsTo)
+                  val refType = ref.typ.asInstanceOf[CCStruct]
+                  CCTerm(refType.setFieldTerm(
+                    ref.toTerm, topVal.toTerm, ptr.fieldId),
+                    ref.typ)
                 }
-                if (rhsType.isInstanceOf[CCStruct] &&
-                  lhsType.isInstanceOf[CCStruct]) {
-                  if (rhsType.asInstanceOf[CCStruct] !=
-                    lhsType.asInstanceOf[CCStruct])
-                    throw new TranslationException("Cannot assign " + rhsType +
-                      " to " + lhsType + "!")
+                else {
+                  val rhsType = topVal.typ
+                  val lhsType = exp.exp_1 match {
+                    case exp: Eselect => getVarType(exp.cident_)
+                    case _ => getVarType(asLValue(exp.exp_1))
+                  }
+                  if (rhsType.isInstanceOf[CCStruct] &&
+                    lhsType.isInstanceOf[CCStruct]) {
+                    if (rhsType.asInstanceOf[CCStruct] !=
+                      lhsType.asInstanceOf[CCStruct])
+                      throw new TranslationException("Cannot assign " + rhsType +
+                        " to " + lhsType + "!")
+                  }
+                  topVal
                 }
-                topVal
               }
             })
       }
@@ -1843,12 +1944,21 @@ class CCReader private (prog : Program,
           for (e <- exp.listexp_) {
             val argName = asLValue(e) //todo: what about fields/constants etc?
             e match {
-              case preop : Epreop =>
+              case preop : Epreop => // todo: add type checking for pointers?
                 if(preop.unary_operator_.isInstanceOf[Address])
-                  ptrArgInds enqueue lookupVar(argName)
+                  ptrArgQueue enqueue (preop.exp_ match{
+                    case field : Eselect => {
+                      val ind = lookupVar(argName)
+                      val structType = values(ind).typ.asInstanceOf[CCStruct]
+                      CCPointer("", CCVoid, ind, true,
+                        structType.getNestedFieldIndices(
+                          getFullFieldName(field)))
+                    }
+                    case _ => CCPointer("", CCVoid, lookupVar(argName))
+                  })
               case _ => {
                 if (isPointer(argName))
-                  ptrArgInds enqueue lookupVar(argName)
+                  ptrArgQueue enqueue getPtr(argName)
                 else evalHelp(e)
               }
             }
@@ -1907,7 +2017,8 @@ class CCReader private (prog : Program,
           })
       }
       case exp : Evar =>
-        pushVal(getValue(exp.cident_))
+        if (isPointer(exp.cident_)) pushVal(getPtrValue(exp.cident_))
+        else pushVal(getValue(exp.cident_))
       case exp : Econst =>
         evalHelp(exp.constant_)
 //      case exp : Estring.     Exp17 ::= String;
@@ -2133,7 +2244,9 @@ class CCReader private (prog : Program,
                   if (!ptr.pointer_.isInstanceOf[Point])
                     throw new TranslationException("Pointers to " +
                       "pointers are not supported yet.")
-                  localPtrs += CCPointer(name, typ, ptrArgInds.dequeue)
+                  val ptrArg = ptrArgQueue.dequeue
+                  localPtrs += CCPointer(name, typ,
+                    ptrArg.pointsTo, ptrArg.pointsToField, ptrArg.fieldId)
                 }
                 case _ => addLocalVar((typ newConstant name), typ)
               }
@@ -2146,7 +2259,7 @@ class CCReader private (prog : Program,
             }
 //            case argDec : Abstract =>
           }
-        assert(ptrArgInds.isEmpty)
+        assert(ptrArgQueue.isEmpty)
 //      case dec : OldFuncDef =>
 //        for (ident <- dec.listcident_)
 //          localVars += new ConstantTerm(ident)
