@@ -432,6 +432,13 @@ class CCReader private (prog : Program,
           }
       }
     }
+  private def isPointer(exp : Exp) : Boolean =
+    exp match {
+      case exp: Evar => isPointer(exp.cident_)
+      case exp: Eselect => isPointer(exp.exp_)
+      case exp: Epreop => isPointer(exp.exp_)
+      case _ => false
+    }
 
   private def getPtrNoException(name : String) : Option[CCPointer] = {
     localPtrs.lastIndexWhere(_.name == name) match {
@@ -1517,7 +1524,7 @@ class CCReader private (prog : Program,
 
     private def isClockVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar =>
-        if (isPointer(exp.cident_)) false // todo pointers to clock vars allowed?
+        if (isPointer(exp)) false // todo pointers to clock vars allowed?
         else getValue(exp.cident_).typ == CCClock
       case exp : Eselect => false
       case exp : Epreop => !exp.unary_operator_.isInstanceOf[Indirection]
@@ -1529,7 +1536,7 @@ class CCReader private (prog : Program,
 
     private def isDurationVariable(exp : Exp) : Boolean = exp match {
       case exp : Evar =>
-        if (isPointer(exp.cident_)) false //todo pointers to duration vars allowed?
+        if (isPointer(exp)) false //todo pointers to duration vars allowed?
         else getValue(exp.cident_).typ == CCDuration
       case exp : Eselect => false
       case exp : Epreop => !exp.unary_operator_.isInstanceOf[Indirection]
@@ -1974,23 +1981,22 @@ class CCReader private (prog : Program,
 
           // evaluate the arguments
           for (e <- exp.listexp_) {
-            val argName = asLValue(e) //todo: what about fields/constants etc?
             e match {
               case preop : Epreop => // todo: add type checking for pointers?
                 if(preop.unary_operator_.isInstanceOf[Address])
                   ptrArgQueue enqueue (preop.exp_ match{
                     case field : Eselect => {
-                      val ind = lookupVar(argName)
+                      val ind = lookupVar(asLValue(field))
                       val structType = values(ind).typ.asInstanceOf[CCStruct]
                       CCPointer("", CCVoid, ind, true,
                         structType.getNestedFieldIndices(
                           getFullFieldName(field)))
                     }
-                    case _ => CCPointer("", CCVoid, lookupVar(argName))
+                    case _ => CCPointer("", CCVoid, lookupVar(asLValue(preop))) // todo: double check
                   })
               case _ => {
-                if (isPointer(argName))
-                  ptrArgQueue enqueue getPtr(argName)
+                if (isPointer(e))
+                  ptrArgQueue enqueue getPtr(asLValue(e))
                 else evalHelp(e)
               }
             }
@@ -2005,7 +2011,7 @@ class CCReader private (prog : Program,
             e match {
               case unary: Epreop =>
                 if (!unary.unary_operator_.isInstanceOf[Address]) popVal
-              case _ => if (!isPointer(asLValue(e))) popVal
+              case _ => if (!isPointer(e)) popVal
             }
           callFunctionInlining(name, functionEntry)
         }
@@ -2071,7 +2077,7 @@ class CCReader private (prog : Program,
           })
       }
       case exp : Evar =>
-        if (isPointer(exp.cident_)) pushVal(getPtrValue(exp.cident_))
+        if (isPointer(exp)) pushVal(getPtrValue(exp.cident_))
         else pushVal(getValue(exp.cident_))
       case exp : Econst =>
         evalHelp(exp.constant_)
@@ -2795,8 +2801,7 @@ class CCReader private (prog : Program,
       case jump : SjumpFour => // return
         returnPred match {
           case Some(rp) => {
-            val args = (allFormalVars take (rp.arity - 1)) ++
-                       List(IConstant(new ConstantTerm("__result")))
+            val args = allFormalVars take (rp.arity)
             output(Clause(atom(rp, args),
                           List(atom(entry, allFormalVars)),
                           true))
