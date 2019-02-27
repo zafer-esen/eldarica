@@ -18,8 +18,7 @@ void main() {
     swap(&s1.b.b.a, &s2.b.b.a);
     assert(s1.b.b.a == 6 && s2.b.b.a == 3);
 
-    int *x1, *x2;
-    x1 = &s1.b.a;
+    int *x1 = &s1.b.a;
     swap(&s2.b.a, x1);
     assert(*x1 == s1.b.a && 
            *x1 == 2 &&

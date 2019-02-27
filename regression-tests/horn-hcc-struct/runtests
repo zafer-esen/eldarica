@@ -2,7 +2,7 @@
 
 LAZABS=../../eld
 
-TESTS="anon.hcc assign.hcc assign-exp-eval-order.hcc assign-illegal.hcc \
+TESTS="anon.hcc assign.hcc assign2.hcc assign-exp-eval-order.hcc assign-illegal.hcc \
        init.hcc loop.hcc nested.hcc race.hcc typedef.hcc"
 
 for name in $TESTS; do

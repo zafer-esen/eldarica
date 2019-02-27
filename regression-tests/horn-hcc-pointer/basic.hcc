@@ -19,10 +19,9 @@ void main() {
     swap(&a, &b);
     assert(a == 42 && b == 3);
 
-    int *x, *y = &b; //local *x and *y shadows the global ones
-    x = &a;
+    int *x = &a, *y = &b; //local *x and *y shadows the global ones
     swap(x, y);
     assert(a == 3 && b == 42);
-    assert(*y == 42 && *x == 3);
+    assert(*x == a && *y == b);
 }
 
