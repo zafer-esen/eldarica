@@ -384,13 +384,14 @@ class CCReader private (prog : Program,
   private def lookupVarNoException(name : String) : Int =
     (localVars lastIndexWhere (_.name == name)) match {
       case -1 => globalVars lastIndexWhere (_.name == name)
-      case i => i + globalVars.size
+      case i  => i + globalVars.size
     }
 
   private def lookupVar(name : String) : Int =
     lookupVarNoException(name) match {
-      case -1 => throw new TranslationException(
-        "Symbol " + name + " is not declared")
+      case -1 =>
+        throw new TranslationException(
+          "Symbol " + name + " is not declared")
       case i => i
     }
 
@@ -411,9 +412,8 @@ class CCReader private (prog : Program,
            localVarTypes.size == localVars.size)
   }
 
-  private def pushLocalFrame = {
+  private def pushLocalFrame =
     localFrameStack push localVars.size
-  }
   private def popLocalFrame = {
     val newSize = localFrameStack.pop
     localVars reduceToSize newSize
@@ -738,10 +738,10 @@ class CCReader private (prog : Program,
       for (initDecl <- decl.listinit_declarator_) {
         var isVariable = false
         initDecl match {
-          case _: OnlyDecl | _: HintDecl => {
+          case _ : OnlyDecl | _ : HintDecl => {
             val declarator = initDecl match {
-              case initDecl: OnlyDecl => initDecl.declarator_
-              case initDecl: HintDecl => initDecl.declarator_
+              case initDecl : OnlyDecl => initDecl.declarator_
+              case initDecl : HintDecl => initDecl.declarator_
             }
             val name = getName(declarator)
             val directDecl = declarator match {
@@ -751,7 +751,7 @@ class CCReader private (prog : Program,
               )
             }
             directDecl match {
-              case _ : NewFuncDec /* | _ : OldFuncDef */ | _: OldFuncDec =>
+              case _ : NewFuncDec /* | _ : OldFuncDef */ | _ : OldFuncDec =>
                 functionDecls.put(name, (directDecl, typ))
               case _ => {
                 isVariable = true
@@ -783,9 +783,9 @@ class CCReader private (prog : Program,
 
           case _ : InitDecl | _ : HintInitDecl => {
             val (declarator, initializer) = initDecl match {
-              case initDecl: InitDecl =>
+              case initDecl : InitDecl =>
                 (initDecl.declarator_, initDecl.initializer_)
-              case initDecl: HintInitDecl =>
+              case initDecl : HintInitDecl =>
                 (initDecl.declarator_, initDecl.initializer_)
             }
 
@@ -838,7 +838,7 @@ class CCReader private (prog : Program,
 
         if (isVariable) {
           // parse possible model checking hints
-          val hints: Seq[Abs_hint] = initDecl match {
+          val hints : Seq[Abs_hint] = initDecl match {
             case decl : HintDecl => decl.listabs_hint_
             case decl : HintInitDecl => decl.listabs_hint_
             case _ => List()
@@ -1833,7 +1833,8 @@ class CCReader private (prog : Program,
           // then we inline the called function
 
           // evaluate the arguments
-          for (e <- exp.listexp_) evalHelp(e)
+          for (e <- exp.listexp_)
+            evalHelp(e)
           outputClause
 
           val functionEntry = initPred
@@ -1846,7 +1847,7 @@ class CCReader private (prog : Program,
         }
       }
 
-      case exp : Eselect => { //Exp16 ::= Exp16 "." Ident;
+      case exp : Eselect => {
         val subexpr = eval(exp.exp_)
         val fieldName = exp.cident_
         subexpr.typ match {
@@ -2375,15 +2376,15 @@ class CCReader private (prog : Program,
     private def isSEFDeclaration(stm : Stm) : Boolean = stm match {
       case stm: DecS => {
         stm.dec_ match {
-          case _: NoDeclarator => true
-          case dec: Declarators =>
+          case _ : NoDeclarator => true
+          case dec : Declarators =>
             dec.listinit_declarator_ forall {
-              case _: OnlyDecl => true
-              case _: HintDecl => true
-              case decl: InitDecl => isSEFInitializer(decl.initializer_)
-              case decl: HintInitDecl =>
+              case _ : OnlyDecl => true
+              case _ : HintDecl => true
+              case decl : InitDecl => isSEFInitializer(decl.initializer_)
+              case decl : HintInitDecl =>
                 decl.initializer_.asInstanceOf[InitExpr].exp_ match {
-                  case _: Econst => true
+                  case _ : Econst => true
                   case _ => false
                 }
             }
