@@ -2,7 +2,7 @@
 
 LAZABS=../../eld
 
-TESTS="basic.hcc fields.hcc fields-nested.hcc unary.hcc unary-struct.hcc unary-struct-nested.hcc"
+TESTS="basic.hcc fields.hcc fields-nested.hcc struct-pointer.hcc unary.hcc unary-struct.hcc unary-struct-nested.hcc"
 
 for name in $TESTS; do
     echo
