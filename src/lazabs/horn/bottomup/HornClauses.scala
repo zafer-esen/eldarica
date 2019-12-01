@@ -210,12 +210,12 @@ object HornClauses {
           )
     }
 
-    def toPrologString : String = ap.DialogUtil.asString {
+    def toPrologString(indent: Int = 0) : String = ap.DialogUtil.asString {
       if (head.pred == FALSE)
         print("false")
       else
         PrincessLineariser printExpression head
-      var sep = " :- "
+      var sep = " "*indent ++ " :- "
       for (a <- body) {
         print(sep)
         PrincessLineariser printExpression a

@@ -203,7 +203,7 @@ class HornWrapper(constraints: Seq[HornClause],
 
       println("Clauses after preprocessing:")
       for (c <- simplifiedClauses)
-        println(c.toPrologString)
+        println(c.toPrologString())
 
       //val aux = simplifiedClauses map (horn2Eldarica(_))
 //      val aux = horn2Eldarica(simplifiedClauses)
