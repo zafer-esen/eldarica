@@ -109,7 +109,7 @@ lazy val root = (project in file(".")).
     settings(
       scalaSource in Compile := baseDirectory.value / "src",
 //
-      mainClass in Compile := Some("lazabs.horn.Main"),
+      mainClass in Compile := Some("lazabs.horn.heap.Main"),
 //
       unmanagedJars in Compile ++= (baseDirectory map { base =>
         val baseDirectories = (base / "flata")

@@ -1,6 +1,7 @@
-package lazabs.horn
+package lazabs.horn.heap
 
-import ap.Signature
+import ap.basetypes.IdealInt
+import ap.{Signature, types}
 import ap.parser._
 import ap.types._
 import ap.proof.theoryPlugins.Plugin
@@ -10,13 +11,8 @@ import ap.theories._
 import ap.theories.ADT
 import ap.types.{MonoSortedIFunction, Sort}
 import ap.util.Debug
-import lazabs.horn.abstractions.VerificationHints
-import lazabs.horn.bottomup.HornClauses
-import lazabs.horn.concurrency.ParametricEncoder.{Infinite, NoSync, NoTime, System}
-import lazabs.horn.concurrency.{ParametricEncoder, VerificationLoop}
 
-import scala.collection.immutable
-import scala.collection.immutable.HashMap
+import scala.collection.mutable
 
 object Heap {
   private val AC = Debug.AC_ADT // todo
@@ -43,115 +39,6 @@ object Heap {
   }
 }
 
-
-
-object Main extends App {
-  val NullObjName = "NullObj"
-  val ObjSort = Heap.ADTSort(0)
-  val StructSSort = Heap.ADTSort(1)
-  val heap = new Heap("MyHeap", "MyAddress", ObjSort, NullObjName,
-    List("HeapObject", "struct_S"), List(
-      (NullObjName, Heap.CtorSignature(List(), ObjSort)),
-      ("WrappedInt", Heap.CtorSignature(List(("getInt", Heap.OtherSort(Sort.Integer))), ObjSort)),
-      ("WrappedS", Heap.CtorSignature(List(("getS", StructSSort)), ObjSort)),
-      ("struct_S", Heap.CtorSignature(List(("x", Heap.OtherSort(Sort.Integer))),
-        StructSSort))))
-
-  val wrappedInt = heap.ctrMap("WrappedInt")
-  val getInt = heap.selMap("WrappedInt", "getInt")
-  val wrappedS = heap.ctrMap("WrappedS")
-  val getS = heap.selMap("WrappedS", "getS")
-  val struct_S = heap.ctrMap("struct_S")
-  val sel_Sx = heap.selMap("struct_S","x")
-
-  println("\nProgram:")
-  println("--------")
-  val progList = List("  int *p = calloc(int); ", "  *p = 42; ",
-    "  struct S* ps = calloc(struct S); ", "  ps->x = *p; ",
-    "  assert(ps->x == 42); ", "")
-  progList.foreach(println)
-
-  import ap.parser.IExpression._
-  import HornClauses._
-
-  val I0 = new Predicate("I0", 1)
-  val I1 = new Predicate("I1", 2)
-  val I2 = new Predicate("I2", 2)
-  val I3 = new Predicate("I3", 3)
-  val I4 = new Predicate("I4", 3)
-  val I5 = new Predicate("I5", 3)
-
-  val h = new ConstantTerm("h")
-  val h1 = new ConstantTerm("h'")
-  val p = new ConstantTerm("p")
-  val ps = new ConstantTerm("ps")
-  val ar = new ConstantTerm("ar") // heap alloc res
-  val o = new ConstantTerm("o") // heap object
-
-  /*
-  > C1:
-> ----------------
->   I0(emptyHeap).
->   I1(newHeap(ar), newAddress(ar))    :- I0(h), alloc(h, WrappedInt(0)) = ar.
->   I2(h', p)                          :- I1(h, p), write(h, p, WrappedInt(42)) = h'.
->   I3(newHeap(ar), p, newAddress(ar)) :- I2(h, p), alloc(h, WrappedS(struct_S(0))) = ar.
->   I4(h', p, ps)                      :- I3(h, p, ps), read(h, p) = o & write(h, ps, WrappedS(struct_S(getInt(o)))) = h'.
->   I5(h, p, ps)                       :- I4(h, p, ps).
->   false                              :- I4(h, p, ps), read(h, ps) = o & x(getS(o)) != 42.
-
-> C2:
-> ----------------
->   I0(emptyHeap).
->   I1(newHeap(ar), newAddress(ar))                                 :- I0(h), alloc(h, WrappedInt(0)) = ar.
->   I2(write(h, p, WrappedInt(42)), p)                              :- I1(h, p).
->   I3(newHeap(ar), p, newAddress(ar))                              :- I2(h, p), alloc(h, WrappedS(struct_S(0))) = ar.
->   I4(write(h, ps, WrappedS(struct_S(getInt(read(h, p))))), p, ps) :- I3(h, p, ps).
->   I5(h, p, ps)                                                    :- I4(h, p, ps).
->   false                                                           :- I4(h, p, ps), x(getS(read(h, ps))) != 42.
-  */
-
-  val clauses1 = List(I0(heap.emptyHeap()) :- true,
-    I1(heap.newHeap(ar), heap.newAddr(ar)) :- (I0(h), heap.alloc(h, wrappedInt(0)) === ar),
-    I2(heap.write(h, p, wrappedInt(42)), p) :- I1(h, p), // C2
-    //I2(h1, p) :- (I1(h, p), heap.writeFun(h, p, WrappedInt(42)) === h1), //C1
-    I3(heap.newHeap(ar), p, heap.newAddr(ar)) :- (I2(h, p), heap.alloc(h, wrappedS(struct_S(0))) === ar),
-    I4(heap.write(h, ps, wrappedS(struct_S(getInt(heap.read(h, p))))), p, ps) :- I3(h, p, ps), // C2
-    //I4(h1, p, ps) :- (I3(h, p, ps), heap.readFun(h, p) === o, heap.writeFun(h, ps,wrappedS(struct_S(getInt(o)))) === h1), // C1
-    I5(h, p, ps) :- I4(h, p, ps)
-  )
-  val assertions = List(
-    false :- (I0(h), heap.counter(h) =/= 0), // emptyHeap = 0
-    false :- (I0(h), heap.addrToNat(p) === 0, heap.isAlloc(h,p)),
-    //false :- (I0(h), heap.alloc(h, wrappedInt(0)) === ar, !heap.isAlloc(heap.newHeap(ar),heap.newAddr(ar)))
-    false :- (I1(h,p), heap.counter(h) =/= 1) // after 1 alloc heap = 1
-    //false :- (I1(h,p), heap.addrToNat(p) =/= 42) // after 1 alloc p = 1
-    //false :- (I1(h,p), !heap.isAlloc(h,p)) // <h,p> is allocated
-    //false :- (I1(h,p), getInt(heap.read(h,p)) =/= 42) // 1 alloc obj was Int(0)
-    //false :- (heap.counter(heap.emptyHeap())  =/= 0)
-    //false :- (I4(h, p, ps), sel_Sx(getS(heap.read(h, ps))) =/= 42) // C2
-    //false :- (I4(h, p, ps), heap.read(h, ps) === o, sel_Sx(getS(o)) =/= 42) // C1
-  )
-  println("Clauses:")
-  println("--------")
-  val clauseHeads = for (c <- clauses1 ++ assertions) yield (ap.DialogUtil.asString
-  {PrincessLineariser printExpression c.head})
-  val maxHeadLen = clauseHeads.maxBy(_.length).length
-  for (c <- clauses1 ++ assertions) {
-    val curHeadLen = ap.DialogUtil.asString {
-      PrincessLineariser printExpression c.head}.length
-    println("  " ++ c.toPrologString(maxHeadLen - curHeadLen))
-  }
-  println
-
-  val process: ParametricEncoder.Process = clauses1.zip(List.fill(clauses1.length)(NoSync))
-
-  val system = System(List((process, ParametricEncoder.Singleton)),
-      0, None, NoTime, List(), assertions)
-
-  new VerificationLoop(system)
-
-}
-
 /** first sort in sortNames should be the object sort *
  *
  * @param heapSortName
@@ -162,7 +49,7 @@ object Main extends App {
  * @param ctorSignatures
  */
 class Heap(heapSortName : String, addressSortName : String,
-             objectSort : Heap.ADTSort, nullObjName : String,
+           nullObjName : String, objectSort : Heap.ADTSort,
              sortNames : Seq[String],
              ctorSignatures : Seq[(String, Heap.CtorSignature)])
     extends Theory {
@@ -177,7 +64,9 @@ class Heap(heapSortName : String, addressSortName : String,
         }
     })
   //-END-ASSERTION-/////////////////////////////////////////////////////////////
-  val ObjectADT = new ADT(sortNames, ctorSignatures)
+  private val ctorSignaturesWithNull = ctorSignatures ++
+    List(("nullCtr", Heap.CtorSignature(List(), objectSort)))
+  private val ObjectADT = new ADT(sortNames, ctorSignaturesWithNull)
 
   val HeapSort = Sort.createInfUninterpretedSort(heapSortName)
   val AddressSort = Sort.createInfUninterpretedSort(addressSortName) //todo: nat?
@@ -191,13 +80,13 @@ class Heap(heapSortName : String, addressSortName : String,
     (for(cid <- ObjectADT.constructors.indices; sel <- ObjectADT.selectors(cid))
       yield (ObjectADT.constructors(cid).name, sel.name) -> sel).toMap
 
-  val nullObj : MonoSortedIFunction = ctrMap(nullObjName)
+  val nullObjCtr = ctrMap("nullCtr");
 
   /** Create return sort of alloc as an ADT: Heap x Address */
-  val AllocResCtorSignature = ADT.CtorSignature(
+  private val AllocResCtorSignature = ADT.CtorSignature(
     List(("newHeap", ADT.OtherSort(HeapSort)),
          ("newAddress", ADT.OtherSort(AddressSort))), ADT.ADTSort(0))
-  val AllocResADT = new ADT(List("AllocRes"),
+  private val AllocResADT = new ADT(List("AllocRes"),
     List(("AllocRes", AllocResCtorSignature)))
   val AllocResSort = AllocResADT.sorts.head
   val newHeap = AllocResADT.selectors(0)(0)
@@ -222,15 +111,23 @@ class Heap(heapSortName : String, addressSortName : String,
     List(HeapSort, AddressSort, ObjectSort), HeapSort, false, false)
   val counter = new MonoSortedIFunction("counter", List(HeapSort),
     Sort.Nat, false, false)
-  val addrToNat = new MonoSortedIFunction("addrToNat",
-    List(AddressSort), Sort.Nat, false, false)
   val isAlloc = new MonoSortedPredicate("isAlloc", List(HeapSort, AddressSort))
 
-  val functions = List(emptyHeap, alloc, read, write, counter, addrToNat,
-    newHeap, newAddr, nullObj)
+  val functions = List(emptyHeap, alloc, read, write, counter,
+    newHeap, newAddr)
   val predefPredicates = List(isAlloc)
 
   import IExpression._
+
+  val nullObj = ObjectSort.newConstant(nullObjName)
+
+  private def _isAlloc(h: ITerm , p: ITerm) : IFormula =
+    counter(h) >= p & p > 0
+ /* private def _alloc(ar: ITerm, h: ITerm, o: ITerm) : IFormula = {
+    counter(newHeap(ar)) === counter(h) + 1 & newAddr(ar) === counter(h) + 1 &
+    read(newHeap(ar), newAddr(ar)) === o /*&
+    all(v(0) =/= newAddr(ar) ==> (read(newHeap(ar), v(0)) === read(h, v(0))))*/
+  }*/
 
   //val factsAboutAllocation =
     //all(List(AddressSort), !isAlloc(emptyHeap(), v(0))) //&
@@ -291,16 +188,66 @@ class Heap(heapSortName : String, addressSortName : String,
             (read(newHeap(v(3)), v(1)) === read(v(0), v(1)))))*/
 
   val factsAboutReadWriteTriggered =
+    all(List(HeapSort, AddressSort, ObjectSort),
+      ITrigger(List(read(write(v(0), v(1), v(2)), v(1))),
+        _isAlloc(v(0), v(1)) ==> (read(write(v(0), v(1), v(2)), v(1)) === v(2)))
+    ) &
+    all(List(HeapSort, AddressSort, ObjectSort, AddressSort),
+      ITrigger(List(read(write(v(0), v(1), v(2)), v(3))),
+        _isAlloc(v(0), v(1)) & _isAlloc(v(0), v(3)) ==>
+        (read(write(v(0), v(1), v(2)), v(3)) === read(v(0), v(3))))
+    ) &
+    all(List(HeapSort, AddressSort, ObjectSort),
+      ITrigger(List(counter(write(v(0), v(1), v(2)))),
+        _isAlloc(v(0), v(1)) ==>
+        (counter(write(v(0), v(1), v(2))) === counter(v(0))))
+    ) &
+    all(List(HeapSort, AddressSort),
+      ITrigger(List(read(v(0), v(1))),
+        !_isAlloc(v(0), v(1)) ==> (read(v(0), v(1)) === nullObj))
+    ) &
+    all(List(HeapSort, AddressSort, ObjectSort),
+        ITrigger(List(write(v(0), v(1), v(2))),
+          !_isAlloc(v(0), v(1)) ==> (write(v(0), v(1), v(2)) === emptyHeap()))
+    ) &
+    all(List(HeapSort, ObjectSort),
+      ITrigger(List(
+        read(newHeap(alloc(v(0), v(1))), newAddr(alloc(v(0), v(1))))),
+        read(newHeap(alloc(v(0), v(1))), newAddr(alloc(v(0), v(1)))) === v(1))
+    ) &
+    all(List(HeapSort, AddressSort),
+      ITrigger(List(read(v(0), v(1))),
+        all(List(ObjectSort),
+          (v(2) =/= newAddr(alloc(v(1), v(0)))) ==>
+          (read(v(1), v(2)) === read(newHeap(alloc(v(1), v(0))), v(2)))))
+    )
+  /*&
+    all(List(),
+      (_isAlloc(v(0), v(1)) & v(2) === write(v(0), v(1), v(3))) ==>
+      (counter(v(0)) === counter(v(2))))*/
+    /*all(List(HeapSort, AddressSort, ObjectSort),
+      isAlloc(v(0), v(1)) ==> (read(v(0), v(1)) =/= nullObj)
+    )
+    all(List(HeapSort, AddressSort, ObjectSort, HeapSort),
+      ITrigger(List(write(v(0), v(1), v(2))),
+        ex(List(ObjectSort),
+          v(0) === nullObj & v(3) === v(0)) ==>
+        (write(v(0), v(1), v(2)) =/= v(3)))) &
+    all(List(ObjectSort, ObjectSort),
+      (v(0) === nullObj & v(1) === nullObj ==> (v(0) === v(1))))*/
+
+
+  /*
     all(List(HeapSort, AddressSort, ObjectSort), // h, a, v
       ITrigger(List(read(write(v(0), v(1), v(2)), v(1))), // todo: pattern makes sense? or just read without write?
-        isAlloc(v(0), v(1)) ==> (read(write(v(0), v(1), v(2)), v(1)) === v(2)))) &
-    all(List(HeapSort, ObjectSort, AllocResSort),
+        isAlloc(v(0), v(1)) ==> (read(write(v(0), v(1), v(2)), v(1)) === v(2)))) //& */
+   /* all(List(HeapSort, ObjectSort, AllocResSort),
       ITrigger(List(read(newHeap(v(2)), newAddr(v(2)))), // todo: does this pattern make sense?
         (alloc(v(0), v(1)) === v(2)) ==> // 0 h, 1 o, 2 ar // todo: should it be a simple read(v(m), v(n)) where ar == <v(m),v(n)>
         (read(newHeap(v(2)), newAddr(v(2))) === v(1)))) &
     all(List(HeapSort, AddressSort, ObjectSort),
       ITrigger(List(read(v(0), v(1))), // todo: ok to have the same trigger pattern?
-        !isAlloc(v(0), v(1)) ==> (read(v(0), v(1)) === nullObj()))) /*&
+        !isAlloc(v(0), v(1)) ==> (read(v(0), v(1)) === nullObj()))) /*&*/
     all(List(HeapSort, AddressSort, AddressSort, ObjectSort), // h, a, a', o
       ITrigger(List(read(v(0), v(1))),
         (v(1) =/= v(2)) & isAlloc(v(0), v(1)) & isAlloc(v(0), v(2)) ==>
@@ -328,10 +275,27 @@ class Heap(heapSortName : String, addressSortName : String,
   //        isAlloc(newHeap(ar), newAddr(ar)) & !isAlloc(h, newAddr(ar)) // new addr was previously unallocated, but now allocated
   // 4 & 5. Only between 0 < k <= counter is allocated.
   val inductionAxioms =
+    /*all(List(HeapSort, AddressSort),
+      isAlloc(v(0), v(1)) <=> (0 < v(1) & v(1) <= counter(v(0)))) &*/
     all(List(HeapSort, AddressSort),
       (v(0) === emptyHeap()) ==> // 1 empty heap starts from 0
-      (counter(v(0)) === 0) & !isAlloc(v(0), v(1))) & // and is unallocated
-    all(List(HeapSort, AddressSort),
+      (counter(v(0)) === 0) & !_isAlloc(v(0), v(1))) & // and is unallocated
+    all(List(HeapSort, ObjectSort, AllocResSort),
+      (v(2) === alloc(v(0), v(1))) ==> // ar = alloc(h, obj)
+      (counter(newHeap(v(2))) === counter(v(0)) + 1 & //ar.h.c = h.c+1
+       newAddr(v(2)) === counter(v(0)) + 1) &
+      _isAlloc(newHeap(v(2)), newAddr(v(2))))// &
+    /*all(List(HeapSort, ObjectSort, AllocResSort),
+      isAlloc(newHeap(alloc(v(0), v(1))), newAddr(alloc(v(0), v(1)))))*/
+    /*all(List(HeapSort, ObjectSort, AllocResSort),
+        (v(2) === alloc(v(0), v(1))) ==> // ar = alloc(h, obj)
+        (counter(newHeap(v(2))) === counter(v(0)) + 1 & //ar.h.c = h.c+1
+        newAddr(v(2)) === counter(v(0)) + 1 & //ar.a.c = h.c+1
+        isAlloc(newHeap(v(2)), newAddr(v(2))) & !isAlloc(v(0), newAddr(v(2))))) &
+    all(List(HeapSort, ObjectSort),
+      ex(List(AllocResSort),
+        v(0) === alloc(v(1), v(2))))*/
+    /*all(List(HeapSort, AddressSort),
       addrToNat(v(1)) === 0 ==> !isAlloc(v(0), v(1))) & // 0 is null addr
     all(List(AddressSort),
       ex(List(IExpression.Sort.Nat),
@@ -339,24 +303,13 @@ class Heap(heapSortName : String, addressSortName : String,
     all(List(HeapSort),
       ex(List(IExpression.Sort.Nat),
         counter(v(1)) === v(0))) &
-    all(List(HeapSort, ObjectSort, AllocResSort, HeapSort, AddressSort),
-      (v(2) === alloc(v(0), v(1)) & //todo: this and the following two axioms do not seem to work
-        v(3) === newHeap(v(2)) & v(4) === newAddr(v(2))) ==> // ar = alloc(h, obj)
-      ((counter(v(3)) === counter(v(0))+1 & //ar.h.c = h.c+1
-       addrToNat(v(4)) === counter(v(3))) &
-       isAlloc(v(3), v(4)))) &
+
     all(List(AllocResSort, HeapSort), // newHeap
       ITrigger(List(newHeap(v(0))), (v(1) === newHeap(v(0))) ==>
       (counter(v(1)) === counter(newHeap(v(0)))))) &
     all(List(AllocResSort, AddressSort), //newAddr
       ITrigger(List(newAddr(v(0))), (v(1) === newAddr(v(0))) ==>
-      (addrToNat(v(1)) === addrToNat(newAddr(v(0))))))
-  /*
-    all(List(HeapSort, ObjectSort, AllocResSort),
-        (v(2) === alloc(v(0), v(1))) ==> // ar = alloc(h, obj)
-        (counter(newHeap(v(2))) === counter(v(0))+1 & //ar.h.c = h.c+1
-        addrToNat(newAddr(v(2))) === counter(v(0))+1 & //ar.a.c = h.c+1
-        isAlloc(newHeap(v(2)), newAddr(v(2))) & !isAlloc(v(0), newAddr(v(2)))))*/
+      (addrToNat(v(1)) === addrToNat(newAddr(v(0))))))*/
   /*all(List(HeapSort, ObjectSort, AllocResSort, IExpression.Sort.Nat), // 3
     ((alloc(v(0), v(1)) === v(2)) & (counter(v(0)) === v(3))) ==>
     (counter(newHeap(v(2))) === v(3) + 1) &
@@ -369,11 +322,20 @@ class Heap(heapSortName : String, addressSortName : String,
     ((v(2) <= 0) | v(2) > counter(v(0))) & addrToNat(v(1)) === v(2) ==>
     !isAlloc(v(0), v(1)))*/
 
-  val theoryAxioms = factsAboutReadWriteTriggered & inductionAxioms
+  val inductionAxiomsv2 =
+    counter(emptyHeap()) === 0 &
+    all(List(HeapSort), counter(v(0)) >= 0) &
+    all(List(HeapSort, ObjectSort, AllocResSort),
+      (v(2) === alloc(v(0), v(1))) ==> // ar = alloc(h, obj)
+      (counter(newHeap(v(2))) === counter(v(0)) + 1 & //ar.h.c = h.c+1
+       newAddr(v(2)) === counter(v(0)) + 1))
+
+  val theoryAxioms = factsAboutReadWriteTriggered & inductionAxiomsv2
 
   val (funPredicates, axioms, _, functionTranslation) = Theory.genAxioms(
     theoryFunctions = functions, theoryAxioms = theoryAxioms,
-    genTotalityAxioms = false, order = TermOrder.EMPTY.extendPred(isAlloc))
+    genTotalityAxioms = false,
+    order = TermOrder.EMPTY.extendPred(isAlloc).extend(nullObj))
   val f = funPredicates.toArray
   val predicates = predefPredicates ++ funPredicates
   val functionPredicateMapping = functions zip funPredicates
@@ -406,14 +368,38 @@ class Heap(heapSortName : String, addressSortName : String,
    * Optionally, other theories that this theory depends on.
    */
   override val dependencies : Iterable[Theory] = List()
+
   /**
    * Optionally, a pre-processor that is applied to formulas over this
    * theory, prior to sending the formula to a prover. This method
    * will be applied very early in the translation process.
    */
-  /* def iPreprocess(f : IFormula, signature : Signature) // todo
-  : (IFormula, Signature) =
-    (f, signature) */
+  override def iPreprocess(f : IFormula, signature : Signature) = // todo
+    (Preproc.visit(f, ()).asInstanceOf[IFormula], signature)
+
+  private object Preproc extends CollectingVisitor[Unit, IExpression] {
+    def postVisit(t : IExpression, arg : Unit,
+                  subres : Seq[IExpression]) : IExpression = t match {
+      case IAtom(`isAlloc`, Seq(h, p)) =>
+        _isAlloc(h, p)
+      /*case IIntFormula(IIntRelation.EqZero,
+      IPlus(ar, ITimes(IdealInt.MINUS_ONE, IFunApp(`alloc`, Seq(h, o))))) =>
+        _alloc(ar, h, o)
+      case IIntFormula(IIntRelation.EqZero,
+      IPlus(IFunApp(`alloc`, Seq(h, o)), ITimes(IdealInt.MINUS_ONE, ar))) =>
+        _alloc(ar, h, o)
+      case IFunApp(`counter`,
+      Seq(IFunApp(`newHeap`, Seq(IFunApp(`alloc`, Seq(h, _)))))) =>
+        counter(h) + 1
+      case IFunApp(`newAddr`, Seq(IFunApp(`alloc`, Seq(h, _)))) =>
+        counter(h) + 1*/
+      case t => //println("preprocess: " + t + " " + t.getClass)
+        t update subres
+    }
+  }
+  /*alloc(h, o) = ar
+  (counter(newHeap(v(2))) === counter(v(0)) + 1 & //ar.h.c = h.c+1
+   newAddr(v(2)) === counter(v(0)) + 1))*/
   /**
    * Optionally, a pre-processor that is applied to formulas over this
    * theory, prior to sending the formula to a prover.
@@ -450,8 +436,8 @@ class Heap(heapSortName : String, addressSortName : String,
    * sound for checking satisfiability of a problem, i.e., if proof construction
    * ends up in a dead end, can it be concluded that a problem is satisfiable.
    */
-  /* def isSoundForSat(theories : Seq[Theory],
-                    config : Theory.SatSoundnessConfig.Value) : Boolean = false*/
+  override def isSoundForSat(theories : Seq[Theory],
+                             config : Theory.SatSoundnessConfig.Value) = true
   // todo
 
   TheoryRegistry register this
