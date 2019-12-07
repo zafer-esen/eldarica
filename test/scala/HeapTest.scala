@@ -1,6 +1,6 @@
 import org.scalatest._
 import ap.SimpleAPI
-import ap.SimpleAPI.{NoModelException, ProverStatus}
+import ap.SimpleAPI.ProverStatus
 import ap.types._
 import ap.parser._
 import ap.util.Debug
@@ -102,7 +102,7 @@ class UnitSpec extends FlatSpec {
   val NullObjName = "NullObj"
   val ObjSort = Heap.ADTSort(0)
   val StructSSort = Heap.ADTSort(1)
-  val heap = new Heap("heap", "addr", "null", ObjSort,
+  val heap = new Heap("heap", "addr", ObjSort,
     List("HeapObject", "struct_S"), List(
       ("WrappedInt", Heap.CtorSignature(List(("getInt",
         Heap.OtherSort(Sort.Integer))), ObjSort)),
@@ -130,7 +130,7 @@ class UnitSpec extends FlatSpec {
     val o1 = ObjectSort.newConstant("o'")
     val c = Sort.Nat.newConstant("c")
 
-    addConstants(List(h, h1, p, p1, ar, ar1, o, o1, c, nullObj))
+    addConstants(List(h, h1, p, p1, ar, ar1, o, o1, c, detObj))
 
     import IExpression.{all => forall, _}
 
@@ -139,10 +139,10 @@ class UnitSpec extends FlatSpec {
 
 
     /** Test cases for facts about allocation */
-    TestCase("Empty heap has counter value 0.",
+    /*TestCase("Empty heap has counter value 0.",
       UnsatStep(counter(emptyHeap()) =/= 0),
       SatStep(counter(emptyHeap()) === 0)
-    )
+    )*/
 
     TestCase (
       "All locations on the empty heap are unallocated.",
@@ -151,16 +151,16 @@ class UnitSpec extends FlatSpec {
     )
 
     TestCase (
-      "For all heaps, location 0 (null) always stays unallocated.",
+      "For all heaps, null pointer always points to an unallocated location.",
       UnsatStep(isAlloc(h, 0))
     )
 
-    TestCase (
+    /*TestCase (
       "Allocation increases counter value by one.",
       CommonAssert(counter(newHeap(alloc(h, o))) === c),
       SatStep(c === counter(h) + 1),
       UnsatStep(c =/= counter(h) + 1)
-    )
+    )*/
 
     TestCase (
       "After alloc, the returned pointer points to an allocated address.",
@@ -257,10 +257,10 @@ class UnitSpec extends FlatSpec {
         !isAlloc(h, p)
       ),
       SatStep(
-        read(h, p) === nullObj
+        read(h, p) === detObj
       ),
       UnsatStep(
-        read(h, p) =/= nullObj
+        read(h, p) =/= detObj
       )
     )
 

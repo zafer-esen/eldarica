@@ -44,14 +44,12 @@ object Heap {
  * @param heapSortName
  * @param addressSortName
  * @param objectSort
- * @param nullObjName
  * @param sortNames
  * @param ctorSignatures
  */
 class Heap(heapSortName : String, addressSortName : String,
-           nullObjName : String, objectSort : Heap.ADTSort,
-             sortNames : Seq[String],
-             ctorSignatures : Seq[(String, Heap.CtorSignature)])
+           objectSort : Heap.ADTSort, sortNames : Seq[String],
+           ctorSignatures : Seq[(String, Heap.CtorSignature)])
     extends Theory {
   import Heap._
   //-BEGIN-ASSERTION-///////////////////////////////////////////////////////////
@@ -64,9 +62,7 @@ class Heap(heapSortName : String, addressSortName : String,
         }
     })
   //-END-ASSERTION-/////////////////////////////////////////////////////////////
-  private val ctorSignaturesWithNull = ctorSignatures ++
-    List(("nullCtr", Heap.CtorSignature(List(), objectSort)))
-  private val ObjectADT = new ADT(sortNames, ctorSignaturesWithNull)
+  private val ObjectADT = new ADT(sortNames, ctorSignatures)
 
   val HeapSort = Sort.createInfUninterpretedSort(heapSortName)
   val AddressSort = Sort.createInfUninterpretedSort(addressSortName) //todo: nat?
@@ -79,8 +75,6 @@ class Heap(heapSortName : String, addressSortName : String,
   val selMap : Map[(String, String), MonoSortedIFunction] =
     (for(cid <- ObjectADT.constructors.indices; sel <- ObjectADT.selectors(cid))
       yield (ObjectADT.constructors(cid).name, sel.name) -> sel).toMap
-
-  val nullObjCtr = ctrMap("nullCtr");
 
   /** Create return sort of alloc as an ADT: Heap x Address */
   private val AllocResCtorSignature = ADT.CtorSignature(
@@ -109,7 +103,7 @@ class Heap(heapSortName : String, addressSortName : String,
     ObjectSort, false, false)
   val write = new MonoSortedIFunction("write",
     List(HeapSort, AddressSort, ObjectSort), HeapSort, false, false)
-  val counter = new MonoSortedIFunction("counter", List(HeapSort),
+  private val counter = new MonoSortedIFunction("counter", List(HeapSort),
     Sort.Nat, false, false)
   val isAlloc = new MonoSortedPredicate("isAlloc", List(HeapSort, AddressSort))
 
@@ -119,7 +113,7 @@ class Heap(heapSortName : String, addressSortName : String,
 
   import IExpression._
 
-  val nullObj = ObjectSort.newConstant(nullObjName)
+  val detObj = ObjectSort.newConstant("detObj")
 
   private def _isAlloc(h: ITerm , p: ITerm) : IFormula =
     counter(h) >= p & p > 0
@@ -140,7 +134,7 @@ class Heap(heapSortName : String, addressSortName : String,
       counter(write(h, p, o)))))) &
 
     HeapSort.all(h => AddressSort.all(p => trig(
-      !_isAlloc(h, p) ==> (read(h, p) === nullObj),
+      !_isAlloc(h, p) ==> (read(h, p) === detObj),
       read(h, p)))) &
 
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
@@ -169,7 +163,7 @@ class Heap(heapSortName : String, addressSortName : String,
   val (funPredicates, axioms, _, functionTranslation) = Theory.genAxioms(
     theoryFunctions = functions, theoryAxioms = theoryAxioms,
     genTotalityAxioms = false,
-    order = TermOrder.EMPTY.extendPred(isAlloc).extend(nullObj))
+    order = TermOrder.EMPTY.extendPred(isAlloc).extend(detObj))
   val f = funPredicates.toArray
   val predicates = predefPredicates ++ funPredicates
   val functionPredicateMapping = functions zip funPredicates
