@@ -1,10 +1,10 @@
-package lazabs.horn.heap
-
+import org.scalatest._
 import ap.SimpleAPI
 import ap.SimpleAPI.{NoModelException, ProverStatus}
 import ap.types._
 import ap.parser._
 import ap.util.Debug
+import lazabs.horn.heap.Heap
 
 class PriTest (p : SimpleAPI, var printModels : Boolean = true,
                var printModelOnlyOnFail : Boolean = true) {
@@ -96,7 +96,7 @@ class PriTest (p : SimpleAPI, var printModels : Boolean = true,
   }
 }
 
-object Main extends App {
+class UnitSpec extends FlatSpec {
   Debug enableAllAssertions true
 
   val NullObjName = "NullObj"
@@ -120,7 +120,6 @@ object Main extends App {
   SimpleAPI.withProver(enableAssert = true) { pr : SimpleAPI =>
     import pr._
     import heap._
-
     val h = HeapSort.newConstant("h")
     val h1 = HeapSort.newConstant("h'")
     val p = AddressSort.newConstant("p")
@@ -133,14 +132,14 @@ object Main extends App {
 
     addConstants(List(h, h1, p, p1, ar, ar1, o, o1, c, nullObj))
 
-    import IExpression._
+    import IExpression.{all => forall, _}
 
     val priTests = new PriTest(pr)
     import priTests._
 
+
     /** Test cases for facts about allocation */
-    TestCase (
-      "Empty heap has counter value 0.",
+    TestCase("Empty heap has counter value 0.",
       UnsatStep(counter(emptyHeap()) =/= 0),
       SatStep(counter(emptyHeap()) === 0)
     )
@@ -188,7 +187,7 @@ object Main extends App {
     TestCase(
       "Deterministic allocation",
       UnsatStep(
-        all(List(AddressSort), isAlloc(h, v(0)) <=> isAlloc(h1, v(0))),
+        forall(List(AddressSort), isAlloc(h, v(0)) <=> isAlloc(h1, v(0))),
         alloc(h, o) === ar,
         alloc(h1, o1) === ar1,
         newAddr(ar) =/= newAddr(ar1)
@@ -300,6 +299,9 @@ object Main extends App {
       println(Console.GREEN_B + "Pass:" + Console.RESET + " " + getRes._1)
       println(
         Console.RED_B + "Fail:" + Console.RESET + " " + (getRes._2 - getRes._1))
+    }
+    "Heap theory tests" should "succeed" in {
+      assert(getRes._1 == getRes._2)
     }
   }
 }
