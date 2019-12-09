@@ -49,7 +49,8 @@ object Heap {
  */
 class Heap(heapSortName : String, addressSortName : String,
            objectSort : Heap.ADTSort, sortNames : Seq[String],
-           ctorSignatures : Seq[(String, Heap.CtorSignature)])
+           ctorSignatures : Seq[(String, Heap.CtorSignature)]/*,
+           detObjName : String / Sort? */)
     extends Theory {
   import Heap._
   //-BEGIN-ASSERTION-///////////////////////////////////////////////////////////
@@ -65,7 +66,7 @@ class Heap(heapSortName : String, addressSortName : String,
   private val ObjectADT = new ADT(sortNames, ctorSignatures)
 
   val HeapSort = Sort.createInfUninterpretedSort(heapSortName)
-  val AddressSort = Sort.createInfUninterpretedSort(addressSortName) //todo: nat?
+  val AddressSort = Sort.createInfUninterpretedSort(addressSortName)
   val ObjectSort = ObjectADT.sorts.head
 
   /** A mapping of ctor names to ctors (for ObjectADT) for convenience*/
@@ -118,6 +119,7 @@ class Heap(heapSortName : String, addressSortName : String,
   private def _isAlloc(h: ITerm , p: ITerm) : IFormula =
     counter(h) >= p & p > 0
 
+  // todo: what about writing a sort other than ObjectSort to the heap?
   val triggeredAxioms = (
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
       _isAlloc(h, p) ==> (read(write(h, p, o), p) === o),
@@ -125,7 +127,7 @@ class Heap(heapSortName : String, addressSortName : String,
 
     HeapSort.all(h => AddressSort.all(p1 => ObjectSort.all(o =>
       AddressSort.all(p2 => trig(
-        _isAlloc(h, p1) & _isAlloc(h, p2) ==>
+        _isAlloc(h, p1) & _isAlloc(h, p2) & p1 =/= p2 ==>
                           (read(write(h, p1, o), p2) === read(h, p2)),
         read(write(h, p1, o), p2)))))) &
 
@@ -255,9 +257,14 @@ class Heap(heapSortName : String, addressSortName : String,
    * sound for checking satisfiability of a problem, i.e., if proof construction
    * ends up in a dead end, can it be concluded that a problem is satisfiable.
    */
-  override def isSoundForSat(theories : Seq[Theory],
-                             config : Theory.SatSoundnessConfig.Value) = true
-  // todo
+  override def isSoundForSat( // todo
+                  theories : Seq[Theory],
+                  config : Theory.SatSoundnessConfig.Value) : Boolean =
+    config match {
+      case Theory.SatSoundnessConfig.Elementary  => true
+      case Theory.SatSoundnessConfig.Existential => true
+      case _                                     => false
+    }
 
   TheoryRegistry register this
   override def toString = "HeapTheory"

@@ -1,102 +1,11 @@
 import org.scalatest._
 import ap.SimpleAPI
-import ap.SimpleAPI.ProverStatus
 import ap.types._
 import ap.parser._
 import ap.util.Debug
 import lazabs.horn.heap.Heap
 
-class PriTest (p : SimpleAPI, var printModels : Boolean = true,
-               var printModelOnlyOnFail : Boolean = true) {
-  import p._
-  private var testCaseCounter : Int = 1
-  private var successCounter : Int = 0
-  private var totalTestCounter : Int = 0
-
-  def reset {
-    testCaseCounter = 1
-    successCounter = 0
-    totalTestCounter = 0
-  }
-
-  def getRes = (successCounter, totalTestCounter)
-
-  private def expect[A](x : A, expected : A) : (A, Boolean) = {
-    val res = x == expected
-    if (res) successCounter = successCounter + 1
-    totalTestCounter = totalTestCounter + 1
-    val color = if (x == expected) Console.GREEN else Console.RED_B
-    println(color + x + Console.RESET)
-    (x, res)
-  }
-
-  abstract sealed class TestStep (val fs : IFormula*)
-  case class SatStep(override val fs : IFormula*) extends TestStep
-  case class UnsatStep(override val fs : IFormula*) extends TestStep
-  case class CommonAssert (override val fs : IFormula*) extends TestStep
-
-  private def printModel {
-    val newline = "\n" + " "*2
-    println {"Model:" + newline +
-             (for ((l, v) <- partialModel.interpretation.iterator)
-               yield ("" + l + " -> " + v)).mkString(newline)
-    }
-  }
-
-  private def justAssert(s : TestStep) = {
-    for (f <- s.fs) {
-      addAssertion(f)
-      print("  ")
-      PrincessLineariser printExpression f
-      println
-    }
-  }
-
-  private def executeStep(ps : ProverStatus.Value, s : TestStep) {
-    for (f <- s.fs) {
-      addAssertion(f)
-      print("  ")
-      PrincessLineariser printExpression f
-      if(s.fs.last != f) println(" &")
-    }
-    print(" --> ")
-    val (proverResult, passed) = expect(???, ps)
-    if (printModels && !(printModelOnlyOnFail && passed)
-        && proverResult == ProverStatus.Sat) printModel
-  }
-
-  def TestCase(name : String, steps : TestStep*) {
-    println("=" * 80)
-    println(Console.BOLD + "Test " + testCaseCounter + ": " + name +
-            Console.RESET)
-    println("-" * 80)
-    var stepNo = 1;
-    scope {
-      for (s <- steps) {
-        if (s.isInstanceOf[CommonAssert]) {
-          println("Common assertion: ")
-          justAssert(s)
-        } else {
-          print("Step " + testCaseCounter + "." + stepNo + " (expected: ")
-          stepNo = stepNo + 1
-          s match {
-            case _ : SatStep => println("Sat)")
-              scope {executeStep(ProverStatus.Sat, s)}
-            case _ : UnsatStep => println("Unsat)")
-              scope {executeStep(ProverStatus.Unsat, s)}
-            case _ => // do not execute anything for common assertions
-          }
-        }
-        if (steps.last != s) println("-" * 80)
-      }
-      println("=" * 80)
-      println
-      testCaseCounter = testCaseCounter + 1
-    }
-  }
-}
-
-class UnitSpec extends FlatSpec {
+class HeapTheoryTests extends FlatSpec {
   Debug enableAllAssertions true
 
   val NullObjName = "NullObj"
@@ -134,15 +43,12 @@ class UnitSpec extends FlatSpec {
 
     import IExpression.{all => forall, _}
 
-    val priTests = new PriTest(pr)
+    val priTests = new PrincessTester(pr,
+      printModels = true,
+      printModelOnlyOnFail = true,
+      printOnlyOnFail = true)
     import priTests._
 
-
-    /** Test cases for facts about allocation */
-    /*TestCase("Empty heap has counter value 0.",
-      UnsatStep(counter(emptyHeap()) =/= 0),
-      SatStep(counter(emptyHeap()) === 0)
-    )*/
 
     TestCase (
       "All locations on the empty heap are unallocated.",
@@ -154,13 +60,6 @@ class UnitSpec extends FlatSpec {
       "For all heaps, null pointer always points to an unallocated location.",
       UnsatStep(isAlloc(h, 0))
     )
-
-    /*TestCase (
-      "Allocation increases counter value by one.",
-      CommonAssert(counter(newHeap(alloc(h, o))) === c),
-      SatStep(c === counter(h) + 1),
-      UnsatStep(c =/= counter(h) + 1)
-    )*/
 
     TestCase (
       "After alloc, the returned pointer points to an allocated address.",
@@ -252,7 +151,7 @@ class UnitSpec extends FlatSpec {
     )
 
     TestCase(
-      "Reading an unallocated location returns the null object",
+      "Reading an unallocated location returns detObject",
       CommonAssert(
         !isAlloc(h, p)
       ),
@@ -292,15 +191,7 @@ class UnitSpec extends FlatSpec {
       )
     )
 
-    if(getRes._1 == getRes._2)
-      println(Console.GREEN_B + "All " + getRes._1 + " tests passed!" +
-              Console.RESET)
-    else {
-      println(Console.GREEN_B + "Pass:" + Console.RESET + " " + getRes._1)
-      println(
-        Console.RED_B + "Fail:" + Console.RESET + " " + (getRes._2 - getRes._1))
-    }
-    "Heap theory tests" should "succeed" in {
+    "All heap theory tests" should "pass" in {
       assert(getRes._1 == getRes._2)
     }
   }
