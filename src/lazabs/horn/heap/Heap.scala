@@ -1,7 +1,7 @@
 package lazabs.horn.heap
 
 import ap.basetypes.IdealInt
-import ap.{Signature, types}
+import ap.Signature
 import ap.parser._
 import ap.types._
 import ap.proof.theoryPlugins.Plugin
@@ -12,13 +12,15 @@ import ap.theories.ADT
 import ap.types.{MonoSortedIFunction, Sort}
 import ap.util.Debug
 
-import scala.collection.mutable
+import scala.collection.{Map => GMap}
+import scala.collection.mutable.{Map => MMap, Set => MSet}
 
 object Heap {
   private val AC = Debug.AC_ADT // todo
   abstract sealed class CtorArgSort
   case class ADTSort(num : Int) extends CtorArgSort
   case class OtherSort(sort : Sort) extends CtorArgSort
+  case object AddressSort extends CtorArgSort
   case class CtorSignature(arguments : Seq[(String, CtorArgSort)],
                            result : ADTSort)
 
@@ -29,6 +31,7 @@ object Heap {
     s match {
       case t : ADTSort => ADT.ADTSort(t.num)
       case t : OtherSort => ADT.OtherSort(t.sort)
+      case AddressSort => ADT.OtherSort(Sort.Nat) // todo: might be wrong
   }
 
   private implicit def HeapSortToADTSort(l : Seq[(String, Heap.CtorSignature)]):
@@ -37,10 +40,28 @@ object Heap {
       for (arg <- s._2.arguments) yield (arg._1, HeapSortToADTSort(arg._2)),
       ADT.ADTSort(s._2.result.num)))
   }
+
+  class Address(sortName : String,
+                heapTheory : Heap) extends ProxySort(Sort.Nat) {
+    import IExpression._
+
+    override val name = sortName
+    override def decodeToTerm(
+                 d : IdealInt,
+                 assignment : GMap[(IdealInt, Sort), ITerm]) : Option[ITerm] =
+      Some(heapTheory.nthAddr(d.intValue))
+  }
+
+  class HeapSort(sortName : String,
+                 heapTheory : Heap) extends ProxySort(Sort.Nat) {
+    import IExpression._
+
+    override val name = sortName
+  }
+
 }
 
-/** first sort in sortNames should be the object sort *
- *
+/**
  * @param heapSortName
  * @param addressSortName
  * @param objectSort
@@ -49,8 +70,8 @@ object Heap {
  */
 class Heap(heapSortName : String, addressSortName : String,
            objectSort : Heap.ADTSort, sortNames : Seq[String],
-           ctorSignatures : Seq[(String, Heap.CtorSignature)]/*,
-           detObjName : String / Sort? */)
+           ctorSignatures : Seq[(String, Heap.CtorSignature)],
+           defaultObjectCtor : ADT => ITerm)
     extends Theory {
   import Heap._
   //-BEGIN-ASSERTION-///////////////////////////////////////////////////////////
@@ -58,24 +79,23 @@ class Heap(heapSortName : String, addressSortName : String,
     ctorSignatures forall {
       case (_, sig) =>
         ((sig.arguments map (_._2)) ++ List(sig.result)) forall {
-          case Heap.ADTSort(id)   => id >= 0 && id < sortNames.size
+          case Heap.ADTSort(id) => id >= 0 && id < sortNames.size
           case _ : OtherSort => true
+          case Heap.AddressSort => true
         }
     })
   //-END-ASSERTION-/////////////////////////////////////////////////////////////
-  private val ObjectADT = new ADT(sortNames, ctorSignatures)
 
-  val HeapSort = Sort.createInfUninterpretedSort(heapSortName)
-  val AddressSort = Sort.createInfUninterpretedSort(addressSortName)
+  val ObjectADT = new ADT(sortNames, ctorSignatures)
+
+
+  // todo: good first approx.
+  // start with the AddressSort
+  // change it to a proxy sort underlying: Nat => Addr
+  // Numbers to Terms (nthAddr)
+  val HeapSort = new HeapSort(heapSortName, this)
+  val AddressSort = new Address(addressSortName, this)
   val ObjectSort = ObjectADT.sorts.head
-
-  /** A mapping of ctor names to ctors (for ObjectADT) for convenience*/
-  val ctrMap : Map[String, MonoSortedIFunction] =
-    ObjectADT.constructors.map(c => c.name -> c).toMap
-  /** A mapping of (ctorName, selName) to selectors (for ObjectADT)*/
-  val selMap : Map[(String, String), MonoSortedIFunction] =
-    (for(cid <- ObjectADT.constructors.indices; sel <- ObjectADT.selectors(cid))
-      yield (ObjectADT.constructors(cid).name, sel.name) -> sel).toMap
 
   /** Create return sort of alloc as an ADT: Heap x Address */
   private val AllocResCtorSignature = ADT.CtorSignature(
@@ -88,13 +108,20 @@ class Heap(heapSortName : String, addressSortName : String,
   val newAddr = AllocResADT.selectors(0)(1)
 
   /** Functions and predicates of the theory
+   * ***************************************************************************
+   * Public functions and predicates
+   * ***************************************************************************
    * emptyHeap: ()                   --> Heap
    * alloc    : Heap x Obj           --> Heap x Address (allocRes)
    * read     : Heap x Address       --> Obj
    * write    : Heap x Address x Obj --> Heap
    * isAlloc  : Heap x Address       --> Bool
-   *
+   * ***************************************************************************
+   * Private functions and predicates
+   * ***************************************************************************
    * counter  : Heap                 --> Nat
+   * nthAddr  : Nat                  --> Nat
+   * ***************************************************************************
    * */
   val emptyHeap = new MonoSortedIFunction("emptyHeap", argSorts = List(),
     resSort = HeapSort, _partial = false, _relational = false)
@@ -104,18 +131,25 @@ class Heap(heapSortName : String, addressSortName : String,
     ObjectSort, false, false)
   val write = new MonoSortedIFunction("write",
     List(HeapSort, AddressSort, ObjectSort), HeapSort, false, false)
-  private val counter = new MonoSortedIFunction("counter", List(HeapSort),
-    Sort.Nat, false, false)
   val isAlloc = new MonoSortedPredicate("isAlloc", List(HeapSort, AddressSort))
+  val nullAddr = new MonoSortedIFunction("null", List(), AddressSort,
+    false, false)
 
-  val functions = List(emptyHeap, alloc, read, write, counter,
-    newHeap, newAddr)
+  val counter = new MonoSortedIFunction("counter", List(HeapSort),
+    Sort.Nat, false, false)
+  val nthAddr = new MonoSortedIFunction("nthAddr", List(Sort.Nat), Sort.Nat,
+    false, false) // todo: part of private API?
+
+  val defObjCtr = defaultObjectCtor(ObjectADT).asInstanceOf[IFunApp].fun
+
+  val functions = List(emptyHeap, alloc, read, write, newHeap, newAddr,
+                       nullAddr, defObjCtr,
+                       counter, nthAddr)
   val predefPredicates = List(isAlloc)
 
   import IExpression._
 
-  val detObj = ObjectSort.newConstant("detObj")
-
+  private val _defObj : ITerm = defaultObjectCtor(ObjectADT)
   private def _isAlloc(h: ITerm , p: ITerm) : IFormula =
     counter(h) >= p & p > 0
 
@@ -123,7 +157,7 @@ class Heap(heapSortName : String, addressSortName : String,
   val triggeredAxioms = (
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
       _isAlloc(h, p) ==> (read(write(h, p, o), p) === o),
-      read(write(h, p, o), p))))) &
+      write(h, p, o))))) &
 
     HeapSort.all(h => AddressSort.all(p1 => ObjectSort.all(o =>
       AddressSort.all(p2 => trig(
@@ -136,7 +170,7 @@ class Heap(heapSortName : String, addressSortName : String,
       counter(write(h, p, o)))))) &
 
     HeapSort.all(h => AddressSort.all(p => trig(
-      !_isAlloc(h, p) ==> (read(h, p) === detObj),
+      !_isAlloc(h, p) ==> (read(h, p) === _defObj),
       read(h, p)))) &
 
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
@@ -155,18 +189,20 @@ class Heap(heapSortName : String, addressSortName : String,
   val inductionAxioms = (
     counter(emptyHeap()) === 0 &
 
-    HeapSort.all(
-      h => counter(h) >= 0 ) & HeapSort.all(h => ObjectSort.all(o => (
+    HeapSort.all(h => trig(
+      counter(h) >= 0,
+      counter(h))) &
+
+    HeapSort.all(h => ObjectSort.all(o => trig(
       counter(newHeap(alloc(h, o))) === counter(h) + 1 &
-      newAddr(alloc(h, o)) === counter(h) + 1))))
+        newAddr(alloc(h, o)) === counter(h) + 1,
+      alloc(h, o)))))
 
   val theoryAxioms = triggeredAxioms & inductionAxioms
 
   val (funPredicates, axioms, _, functionTranslation) = Theory.genAxioms(
     theoryFunctions = functions, theoryAxioms = theoryAxioms,
-    genTotalityAxioms = false,
-    order = TermOrder.EMPTY.extendPred(isAlloc).extend(detObj))
-  val f = funPredicates.toArray
+    genTotalityAxioms = false/*, order = ObjectADT extend TermOrder.EMPTY*/)
   val predicates = predefPredicates ++ funPredicates
   val functionPredicateMapping = functions zip funPredicates
 
@@ -197,7 +233,7 @@ class Heap(heapSortName : String, addressSortName : String,
   /**
    * Optionally, other theories that this theory depends on.
    */
-  override val dependencies : Iterable[Theory] = List()
+  override val dependencies : Iterable[Theory] = List(ObjectADT, AllocResADT)
 
   /**
    * Optionally, a pre-processor that is applied to formulas over this
@@ -210,13 +246,13 @@ class Heap(heapSortName : String, addressSortName : String,
   private object Preproc extends CollectingVisitor[Unit, IExpression] {
     def postVisit(t : IExpression, arg : Unit,
                   subres : Seq[IExpression]) : IExpression = t match {
+      case IAtom(`isAlloc`, Seq(_, IFunApp(`nullAddr`, _))) => false
       case IAtom(`isAlloc`, Seq(h, p)) =>
-        _isAlloc(h, p)/*
-      case IFunApp(`counter`,
-      Seq(IFunApp(`newHeap`, Seq(IFunApp(`alloc`, Seq(h, _)))))) =>
-        counter(h) + 1
-      case IFunApp(`newAddr`, Seq(IFunApp(`alloc`, Seq(h, _)))) =>
-        counter(h) + 1*/
+        _isAlloc(h, p)
+      case IFunApp(`nullAddr`, _) => 0 // todo do these cases make sense?
+      case IFunApp(`nthAddr`, Seq(n)) => n
+      case IFunApp(`write`, Seq(_, IFunApp(`nullAddr`, _), _)) => emptyHeap()
+      case IFunApp(`read`, Seq(_, IFunApp(`nullAddr`, _))) => _defObj
       case t => //println("preprocess: " + t + " " + t.getClass)
         t update subres
     }

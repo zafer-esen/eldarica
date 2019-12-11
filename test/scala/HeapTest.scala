@@ -2,6 +2,7 @@ import org.scalatest._
 import ap.SimpleAPI
 import ap.types._
 import ap.parser._
+import ap.theories.ADT
 import ap.util.Debug
 import lazabs.horn.heap.Heap
 
@@ -11,24 +12,38 @@ class HeapTheoryTests extends FlatSpec {
   val NullObjName = "NullObj"
   val ObjSort = Heap.ADTSort(0)
   val StructSSort = Heap.ADTSort(1)
+
   val heap = new Heap("heap", "addr", ObjSort,
     List("HeapObject", "struct_S"), List(
       ("WrappedInt", Heap.CtorSignature(List(("getInt",
         Heap.OtherSort(Sort.Integer))), ObjSort)),
       ("WrappedS", Heap.CtorSignature(List(("getS", StructSSort)), ObjSort)),
       ("struct_S", Heap.CtorSignature(List(("x", Heap.OtherSort(Sort.Integer))),
-        StructSSort))))
+        StructSSort)),
+      ("defObj", Heap.CtorSignature(List(), ObjSort))),
+    defObjCtor)
 
-  val wrappedInt = heap.ctrMap("WrappedInt")
-  val getInt = heap.selMap("WrappedInt", "getInt")
-  val wrappedS = heap.ctrMap("WrappedS")
-  val getS = heap.selMap("WrappedS", "getS")
-  val struct_S = heap.ctrMap("struct_S")
-  val sel_Sx = heap.selMap("struct_S","x")
+  def defObjCtor(objectADT : ADT) : ITerm = {
+    import IExpression.toFunApplier
+    //h.ObjectADT.constructors.last
+    objectADT.constructors.last()
+  }
+
+  val Seq(wrappedInt,
+          wrappedS,
+          struct_S,
+          defObjCtr) = heap.ObjectADT.constructors
+  val Seq(Seq(getInt),
+          Seq(getS),
+          Seq(sel_x), _*) = heap.ObjectADT.selectors
+
+  import IExpression.toFunApplier
+  val defObj = defObjCtr()
 
   SimpleAPI.withProver(enableAssert = true) { pr : SimpleAPI =>
     import pr._
     import heap._
+
     val h = HeapSort.newConstant("h")
     val h1 = HeapSort.newConstant("h'")
     val p = AddressSort.newConstant("p")
@@ -38,8 +53,8 @@ class HeapTheoryTests extends FlatSpec {
     val o = ObjectSort.newConstant("o")
     val o1 = ObjectSort.newConstant("o'")
     val c = Sort.Nat.newConstant("c")
-
-    addConstants(List(h, h1, p, p1, ar, ar1, o, o1, c, detObj))
+// todo use create constant
+    addConstants(List(h, h1, p, p1, ar, ar1, o, o1, c))
 
     import IExpression.{all => forall, _}
 
@@ -49,7 +64,6 @@ class HeapTheoryTests extends FlatSpec {
       printOnlyOnFail = true)
     import priTests._
 
-
     TestCase (
       "All locations on the empty heap are unallocated.",
       UnsatStep(isAlloc(emptyHeap(), p)),
@@ -58,7 +72,20 @@ class HeapTheoryTests extends FlatSpec {
 
     TestCase (
       "For all heaps, null pointer always points to an unallocated location.",
-      UnsatStep(isAlloc(h, 0))
+      UnsatStep(isAlloc(h, nullAddr()))
+    )
+
+    TestCase(
+      "For all heaps, trying to read the null pointer returns the defined " +
+      "object.",
+      UnsatStep(read(h, nullAddr()) =/= defObj),
+      SatStep(read(h, nullAddr()) === defObj)
+    )
+
+    TestCase(
+      "For all heaps, writing to the null pointer returns the empty heap.",
+      UnsatStep(write(h, nullAddr(), o) =/= emptyHeap()),
+      SatStep(write(h, nullAddr(), o) === emptyHeap())
     )
 
     TestCase (
@@ -69,7 +96,7 @@ class HeapTheoryTests extends FlatSpec {
     )
 
     TestCase (
-      "After alloc, previously allocated addresses are the same in both heaps",
+      "After alloc, previously allocated addresses are the same in both heaps.",
       CommonAssert(
         alloc(h, o) === ar
       ),
@@ -151,15 +178,15 @@ class HeapTheoryTests extends FlatSpec {
     )
 
     TestCase(
-      "Reading an unallocated location returns detObject",
+      "Reading an unallocated location returns the defined object",
       CommonAssert(
         !isAlloc(h, p)
       ),
       SatStep(
-        read(h, p) === detObj
+        read(h, p) === defObj
       ),
       UnsatStep(
-        read(h, p) =/= detObj
+        read(h, p) =/= defObj
       )
     )
 
