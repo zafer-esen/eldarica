@@ -1,18 +1,21 @@
 package lazabs.horn.heap
 
 import ap.basetypes.IdealInt
-import ap.Signature
+import ap.parser.IExpression.Predicate
+import ap.{Signature, theories}
 import ap.parser._
 import ap.types._
 import ap.proof.theoryPlugins.Plugin
 import ap.terfor.TermOrder
 import ap.terfor.conjunctions.Conjunction
+import ap.terfor.preds.Atom
 import ap.theories._
 import ap.theories.ADT
 import ap.types.{MonoSortedIFunction, Sort}
 import ap.util.Debug
 
-import scala.collection.{Map => GMap}
+import scala.collection.mutable.{ArrayBuffer, ArrayStack, LinkedHashMap, HashMap => MHashMap, HashSet => MHashSet}
+import scala.collection.{mutable, Map => GMap}
 import scala.collection.mutable.{Map => MMap, Set => MSet}
 
 object Heap {
@@ -57,6 +60,122 @@ object Heap {
     import IExpression._
 
     override val name = sortName
+    override def decodeToTerm(
+                 d : IdealInt,
+                 assignment : GMap[(IdealInt, Sort), ITerm]) : Option[ITerm] = {
+      assignment get ((d, this))
+    }
+
+    override def augmentModelTermSet(
+                 model : Conjunction,
+                 terms : MMap[(IdealInt, Sort), ITerm],
+                 allTerms : Set[(IdealInt, Sort)],
+                 definedTerms : MSet[(IdealInt, Sort)]) : Unit = {
+
+      /** Helper function to collect atoms from theory functions */
+      def getAtoms (f : IFunction) : IndexedSeq[Atom] =
+        model.predConj positiveLitsWithPred heapTheory.heapFunPredMap(f)
+
+      /** Collect the relevant functions and predicates of the theory */
+      import heapTheory.{read, emptyHeap, counter}
+      val readAtoms = getAtoms(read)
+      val counterAtoms = getAtoms(counter)
+      val emptyHeapAtoms = getAtoms(emptyHeap)
+
+      /*
+      val allocResCtorPred = heapTheory.AllocResADT.constructorPreds.head
+      val allocResCtor = heapTheory.AllocResADT.constructors.head
+      val allocResAtoms = model.predConj positiveLitsWithPred allocResCtorPred*/
+      /**
+       *  Helper function to get the counter value of a given heap term.
+       *  @return counter : Int
+       */
+      def getCounterVal (heapTerm : ITerm) : Int = {
+        counterAtoms.find(a =>
+          getSubTerms(a.init, heapTheory.counter.argSorts, terms) match {
+            case Left(args) if args.head == heapTerm => true
+            case _ => false
+          }) match {
+          case Some(a) => a.last.constant.intValue
+          case None => -1
+        }
+      }
+      /**
+       * Helper function to create a heap term recursively. Writes defObj in all
+       * places except the last.
+       * @param n The counter value of the heap (the last location).
+       * @param lastObj The object to be placed at the last location.
+       * @return The created heap object.
+       */
+      def createHeapTerm(n : Int, lastObj : ITerm) : ITerm = {
+        n match{
+          case 0 => heapTheory.emptyHeap()
+          case _ if n > 0 =>
+            createNestedHeapTerm(n, heapTheory.emptyHeap(), lastObj)
+          case _ => throw new HeapException("createNestedHeapTerm called with" +
+                                            "n: " + n + " (must be positive)")
+        }
+      }
+      def createNestedHeapTerm(n : Int, initTerm : ITerm, lastObj : ITerm)
+      : ITerm = {
+        import heapTheory.{alloc, newHeap, _defObj}
+        n match{
+          case 1 => newHeap(alloc(initTerm, lastObj))
+          case _ => createNestedHeapTerm(n-1,
+            newHeap(alloc(initTerm, _defObj)), lastObj)
+        }
+      }
+
+      /** Replace empty heap terms. */
+      for (a <- emptyHeapAtoms) {
+        val key = (a.last.constant, this)
+        if(!(terms contains key))
+          terms.put(key, emptyHeap())
+      }
+
+      /**
+       * Look at read predicates and define the heap terms in the model.
+       * This part turns the representation of heap terms in the model from
+       * integer values to actual terms (like newHeap(alloc(emptyHeap, 42)) )
+       */
+      for (a <- readAtoms if terms contains(a.last.constant, read.resSort)) {
+        val resTerm : ITerm = terms getOrElse
+                              ((a.last.constant, read.resSort), -1)
+        if(resTerm != IIntLit(-1)) {
+          getSubTerms(a.init, read.argSorts, terms) match {
+            case Left(argTerms) if !argTerms.head.isInstanceOf[IFunApp] =>
+              val key = (a.head.constant, read.argSorts.head)
+              val newTerm = createHeapTerm(getCounterVal(argTerms.head), resTerm)
+              if (!(definedTerms contains key)) {
+                terms.put(key, newTerm)
+                definedTerms += key
+              }
+            case _ =>
+          }
+        }
+      }
+      /*for (a <- allocResAtoms) {
+        val key = (a.last.constant, allocResCtor.resSort)
+        if(!(definedTerms contains key)) {
+          val term : ITerm = terms getOrElse(key, -1)
+          if (term != IIntLit(-1)) {
+            val heapKey = (a.head.constant, this)
+            if (definedTerms contains heapKey) {
+              val heapTerm : ITerm = terms.getOrElse(heapKey, -1)
+              val addrTerm : ITerm = term match {
+                case IFunApp(allocResCtor, Seq(_, t)) => t
+                case _ => -1
+              }
+              if(addrTerm != IIntLit(-1)) {
+                val newTerm = allocResCtor(heapTerm, addrTerm)
+                terms.put(key, newTerm)
+                definedTerms += key
+              }
+            }
+          }
+        }
+      }*/
+    }
   }
 
 }
@@ -140,10 +259,8 @@ class Heap(heapSortName : String, addressSortName : String,
   val nthAddr = new MonoSortedIFunction("nthAddr", List(Sort.Nat), Sort.Nat,
     false, false) // todo: part of private API?
 
-  val defObjCtr = defaultObjectCtor(ObjectADT).asInstanceOf[IFunApp].fun
-
-  val functions = List(emptyHeap, alloc, read, write, newHeap, newAddr,
-                       nullAddr, defObjCtr,
+  val functions = List(emptyHeap, alloc, read, write,
+                       nullAddr,
                        counter, nthAddr)
   val predefPredicates = List(isAlloc)
 
@@ -202,9 +319,11 @@ class Heap(heapSortName : String, addressSortName : String,
 
   val (funPredicates, axioms, _, functionTranslation) = Theory.genAxioms(
     theoryFunctions = functions, theoryAxioms = theoryAxioms,
-    genTotalityAxioms = false/*, order = ObjectADT extend TermOrder.EMPTY*/)
+    genTotalityAxioms = false, otherTheories = List(ObjectADT, AllocResADT))
   val predicates = predefPredicates ++ funPredicates
   val functionPredicateMapping = functions zip funPredicates
+  private val heapFunPredMap = new MHashMap[IFunction, Predicate]
+  functionPredicateMapping.map(m => heapFunPredMap.put(m._1, m._2))
 
   /**
    * Information which of the predicates satisfy the functionality axiom;

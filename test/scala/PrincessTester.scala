@@ -2,6 +2,8 @@ import ap.SimpleAPI
 import ap.SimpleAPI.ProverStatus
 import ap.parser._
 
+import scala.util.matching.Regex.Match
+
 class PrincessTester (p : SimpleAPI, var printModels : Boolean = true,
                       var printModelOnlyOnFail : Boolean = true,
                       var printOnlyOnFail : Boolean = true) {
@@ -33,10 +35,17 @@ class PrincessTester (p : SimpleAPI, var printModels : Boolean = true,
   case class CommonAssert (override val fs : IFormula*) extends TestStep
 
   private def printModel {
-    val newline = "\n" + " "*2
-    println {"Model:" + newline +
+    val newLine = "\n" + " "*2
+    val colors = List(Console.WHITE, Console.YELLOW).toArray
+    var currentColorFlag = false
+    println {"Model:" + newLine +
              (for ((l, v) <- partialModel.interpretation.iterator)
-               yield ("" + l + " -> " + v)).mkString(newline)
+               yield {
+                 currentColorFlag = !currentColorFlag
+                 val str = LongLines.processLine(l + " -> " + v)
+                 val curColor = if (currentColorFlag) colors(0) else colors(1)
+                 curColor + str + Console.RESET
+               }).mkString(newLine)
     }
   }
 

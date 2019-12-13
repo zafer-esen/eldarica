@@ -44,8 +44,9 @@ class DevTests extends FlatSpec {
     val h3 = HeapSort.newConstant("h3")
     val ar = AllocResSort.newConstant("ar")
     val p = AddressSort.newConstant("p")
+    val x = Sort.Integer.newConstant("x")
 
-    addConstants(List(h1, h2, h3, p, ar))
+    addConstants(List(h1, h2, h3, p, ar, x))
 
     import IExpression.{all => forall, _}
 
@@ -56,16 +57,63 @@ class DevTests extends FlatSpec {
     import priTests._
 
     TestCase (
-      "Reading back written value after chain allocation and a write.",
+      "Model generation case 1",
       CommonAssert(
-        ar === alloc(emptyHeap(), wrappedInt(1))//,
+        //ar === alloc(emptyHeap(), wrappedInt(1))//,
         /*h1 === newHeap(ar),
         h2 === newHeap(alloc(h1, wrappedInt(2))),
         p === newAddr(alloc(h1, wrappedInt(2))),
         h3 === write(h2, p, wrappedInt(3))*/
+        isAlloc(h1, p),
+        read(h1, p) === wrappedInt(x),
+        p === nthAddr(3)
       ),
       //SatStep(read(h3, p) === wrappedInt(3))
-      SatStep(counter(newHeap(ar)) === 1)
+      //SatStep(counter(newHeap(ar)) === 1)
+      SatStep(x > 0)
+    )
+
+    TestCase (
+      "Model generation case 2",
+      CommonAssert(
+        isAlloc(h1,p),
+        h2 === newHeap(alloc(h1, wrappedInt(42))),
+        wrappedInt(x) === read(h1, p)
+      ),
+      SatStep(x > 0)
+    )
+
+    TestCase (
+      "Model generation case 3",
+      CommonAssert(
+        isAlloc(h1,p),
+        h2 === newHeap(alloc(h1, wrappedInt(42))),
+        wrappedInt(x) === read(h2, p)
+      ),
+      SatStep(x > 0)
+    )
+
+    TestCase (
+      "Model generation case 4",
+      CommonAssert(
+        isAlloc(h1,p),
+        h2 === write(newHeap(alloc(h1, wrappedInt(42))),
+                     newAddr(alloc(h1, wrappedInt(42))), wrappedInt(43)),
+        wrappedInt(x) === read(h2, p)
+      ),
+      SatStep(x > 0)
+    )
+
+    TestCase (
+      "Model generation case 5",
+      CommonAssert(
+        isAlloc(h1,p),
+        p === nthAddr(10),
+        h2 === write(newHeap(alloc(h1, wrappedInt(42))),
+          newAddr(alloc(h1, wrappedInt(42))), wrappedInt(43)),
+        wrappedInt(x) === read(h2, p)
+      ),
+      SatStep(x > 0)
     )
 
     "..." should "pass" in {
