@@ -11,7 +11,7 @@ object LongLines {
     def processLine(line: String, width: Int = 80,
                     indent: Int = 4): String = {
       if (line.length() > width) {
-        val pattern = Pattern.compile("[^a-zA-Z0-9.\\s/\")]")
+        val pattern = Pattern.compile("[^-a-zA-Z0-9.\\s/\")]")
         val matcher = pattern.matcher(line)
         if(matcher.find(width/2)){
           val padding = " " * indent

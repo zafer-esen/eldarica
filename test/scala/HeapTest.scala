@@ -60,8 +60,8 @@ class HeapTheoryTests extends FlatSpec {
 
     val priTests = new PrincessTester(pr,
       printModels = true,
-      printModelOnlyOnFail = true,
-      printOnlyOnFail = true)
+      printModelOnlyOnFail = false,
+      printOnlyOnFail = false)
     import priTests._
 
     TestCase (
@@ -94,6 +94,7 @@ class HeapTheoryTests extends FlatSpec {
       SatStep(isAlloc(newHeap(ar), newAddr(ar))),
       UnsatStep(!isAlloc(newHeap(ar), newAddr(ar)))
     )
+
 
     TestCase (
       "After alloc, previously allocated addresses are the same in both heaps.",
