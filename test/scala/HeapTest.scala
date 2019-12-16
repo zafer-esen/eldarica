@@ -60,8 +60,8 @@ class HeapTheoryTests extends FlatSpec {
 
     val priTests = new PrincessTester(pr,
       printModels = true,
-      printModelOnlyOnFail = false,
-      printOnlyOnFail = false)
+      printModelOnlyOnFail = true,
+      printOnlyOnFail = true)
     import priTests._
 
     TestCase (
@@ -208,15 +208,17 @@ class HeapTheoryTests extends FlatSpec {
 
     TestCase(
       "Writing to an unallocated location returns the empty heap.",
-      CommonAssert(
-        !isAlloc(h, p)
-      ),
-      SatStep(
-        write(h, p, o) === emptyHeap()
-      ),
-      UnsatStep(
-        write(h, p, o) =/= emptyHeap()
-      )
+      CommonAssert(!isAlloc(h, p)),
+      SatStep(write(h, p, o) === emptyHeap()),
+      UnsatStep(write(h, p, o) =/= emptyHeap()),
+
+      CommonAssert(h =/= emptyHeap()),
+      SatStep(write(h, p, o) === emptyHeap()),
+      UnsatStep(write(h, p, o) =/= emptyHeap()),
+
+      CommonAssert(p =/= nullAddr()),
+      SatStep(write(h, p, o) === emptyHeap()),
+      UnsatStep(write(h, p, o) =/= emptyHeap())
     )
 
     "All heap theory tests" should "pass" in {

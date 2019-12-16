@@ -52,8 +52,8 @@ class DevTests extends FlatSpec {
 
     val priTests = new PrincessTester(pr,
       printModels = true,
-      printModelOnlyOnFail = false,
-      printOnlyOnFail = false)
+      printModelOnlyOnFail = true,
+      printOnlyOnFail = true)
     import priTests._
 
     TestCase (

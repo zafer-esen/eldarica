@@ -87,8 +87,10 @@ class PrincessTester (p : SimpleAPI, var printModels : Boolean = true,
       scope {
         for (s <- steps) {
           if (s.isInstanceOf[CommonAssert]) {
+            println("-" * 80)
             println("Common assertion: ")
             justAssert(s)
+            println("-" * 80)
           } else {
             print("Step " + testCaseCounter + "." + stepNo + " (expected: ")
             stepNo = stepNo + 1
@@ -99,8 +101,8 @@ class PrincessTester (p : SimpleAPI, var printModels : Boolean = true,
                 if (!executeStep(ProverStatus.Unsat, s)) anyFail = true
               case _ => // do nothing as CommonAssert step is already handled
             }
+            if (steps.last != s) println("-" * 80)
           }
-          if (steps.last != s) println("-" * 80)
         }
         println("=" * 80)
         testCaseCounter = testCaseCounter + 1

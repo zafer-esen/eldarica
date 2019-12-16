@@ -8,6 +8,7 @@ import ap.types._
 import ap.proof.theoryPlugins.Plugin
 import ap.terfor.TermOrder
 import ap.terfor.conjunctions.Conjunction
+import ap.terfor.linearcombination.LinearCombination
 import ap.terfor.preds.Atom
 import ap.theories._
 import ap.theories.ADT
@@ -53,6 +54,8 @@ object Heap {
                  d : IdealInt,
                  assignment : GMap[(IdealInt, Sort), ITerm]) : Option[ITerm] =
       Some(heapTheory.nthAddr(d.intValue))
+
+   // override individuals : Stream[ITerm] = for (t <- Sort.Nat.individuals) yield nthAddr(t)
   }
 
   class HeapSort(sortName : String,
@@ -76,31 +79,17 @@ object Heap {
       def getAtoms (f : IFunction) : IndexedSeq[Atom] =
         model.predConj positiveLitsWithPred heapTheory.heapFunPredMap(f)
 
-      /** Collect the relevant functions and predicates of the theory */
+      /* Collect the relevant functions and predicates of the theory */
       import heapTheory.{read, emptyHeap, counter, alloc}
       val readAtoms = getAtoms(read)
       val counterAtoms = getAtoms(counter)
       val emptyHeapAtoms = getAtoms(emptyHeap)
       val allocAtoms = getAtoms(alloc)
 
-
       /*val allocResCtorPred = heapTheory.AllocResADT.constructorPreds.head
       val allocResCtor = heapTheory.AllocResADT.constructors.head
       val allocResAtoms = model.predConj positiveLitsWithPred allocResCtorPred*/
-      /**
-       *  Helper function to get the counter value of a given heap term.
-       *  @return counter : Int
-       */
-      def getCounterVal (heapTerm : ITerm) : Int = {
-        counterAtoms.find(a =>
-          getSubTerms(a.init, heapTheory.counter.argSorts, terms) match {
-            case Left(args) if args.head == heapTerm => true
-            case _ => false
-          }) match {
-          case Some(a) => a.last.constant.intValue
-          case None => -1
-        }
-      }
+
       /**
        * Helper function to create a heap term recursively. Writes defObj in all
        * places except the last.
@@ -127,95 +116,69 @@ object Heap {
         }
       }
 
-      /** Replace empty heap terms. */
-    /*  for (a <- emptyHeapAtoms) {
-        val key = (a.last.constant, this)
-        if(!(terms contains key))
-          terms.put(key, emptyHeap())
-      }*/
+      /*
+       * Every (unique) heap has an associated counter value in the model.
+       * So we are first looking at each counter to obtain the heap ids and
+       * counter values. Empty heap has counter value 0.
+       *
+       * Then, for each heap id, we will go through reads to get the value of
+       * the object at the last location, which will enable us to create the
+       * new heap term.
+       *
+       * If the heap term (h) cannot be found in reads, it might be just that it
+       * was never allocated nor written to from a previous heap
+       * (i.e. only isAlloc(h) is asserted). Then this heap term is created
+       * using defObj at its last location.
+       * */
 
-      /**
-       * Look at read predicates and define the heap terms in the model.
-       * This part turns the representation of heap terms in the model from
-       * integer values to actual terms (like newHeap(alloc(emptyHeap, 42)) )
-       */
-      println(Console.BLUE + model + Console.RESET + "\n")
-      for (a <- readAtoms if terms contains(a.last.constant, read.resSort)) {
-        val resTerm : ITerm = terms getOrElse
-                              ((a.last.constant, read.resSort), -1)
-        if(resTerm != IIntLit(-1)) {
-          getSubTerms(a.init, read.argSorts, terms) match {
-            case Left(argTerms) if !argTerms.head.isInstanceOf[IFunApp] =>
-              val key = (a.head.constant, this)
-              if(argTerms.length == 2) {
-                val counterVal = argTerms(1) match {
-                  case IFunApp(heapTheory.nthAddr, Seq(IIntLit(n))) => n.intValue
-                  case _ => -1
-                }
-                if (counterVal >= 0) {
-                  val newTerm = createHeapTerm(counterVal, resTerm)
-                  if (!(definedTerms contains key)) {
-                    terms.put(key, newTerm)
-                    definedTerms += key
-                  }
-                }
-              }
-            case _ =>
+       /* counter atoms have the form: counter(heapId, counterVal) */
+      for (a <- counterAtoms) {
+        val heapId = a(0).constant
+        val counterVal = a(1).constant
+        val heapKey = (heapId, this)
+        /* if the heap term has not been assigned a term yet (and it is not
+         * the empty heap) */
+        if(!(definedTerms contains heapKey) && counterVal != IdealInt(0)) {
+          /* First look through all the reads to see if we can gather info
+           * on this term (more specifically we want the object value at
+           * the last location, i.e. at counterVal)*/
+
+          /* Read atoms have the form: read(heapId, addrVal, objId)
+           * We need to find the read (if it exists), where heapId matches and
+           * addrVal = counterVal. counterVal = 0 is the empty heap.
+           * */
+          val objTermId : IdealInt = readAtoms.find(
+            ra => ra(0).constant == heapId &&
+                  ra(1).constant == counterVal) match {
+            case Some(ra) => ra(2).constant
+            case None => -1 // create the term using defObj.
           }
+          val objTerm : ITerm = objTermId match {
+            case IdealInt(-1) => heapTheory._defObj
+            case _ => terms.getOrElse((objTermId, heapTheory.ObjectSort), -1)
+          }
+
+          if(objTerm != i(-1)) { // skip if objTerm is not defined yet
+            val newHeapTerm = createHeapTerm(counterVal.intValue, objTerm)
+            terms.put(heapKey, newHeapTerm)
+            definedTerms += heapKey
+          }
+        }
+        else if (!(definedTerms contains heapKey)) {
+          terms.put(heapKey, emptyHeap())
+          definedTerms += heapKey
         }
       }
-     /* for (a <- allocAtoms if terms contains(a.last.constant, alloc.resSort)) {
-        getSubTerms(a.init, alloc.argSorts, terms) match {
-          case Left(argTerms) => val key = (a.last.constant, alloc.resSort)
-            println(Console.MAGENTA_B + argTerms + Console.RESET)
-            val resTerm = terms.getOrElse(key, -1)
-            println(Console.BLUE_B + resTerm + Console.RESET)
-            val allocResCtr = heapTheory.AllocResADT.constructors.head
-            resTerm match {
-              case IFunApp(allocresCtr, Seq(IIntLit(hid),
-              IFunApp(heapTheory.nthAddr,
-              Seq(IIntLit(n))))) =>
-                println(Console.BLUE_B + resTerm + Console.RESET)
-                val newHeapTerm = createHeapTerm(n.intValue + 1, argTerms.last)
-                val newHeapKey = (hid, this)
-                println(Console.BLUE_B + resTerm + Console.RESET)
-                if (!(definedTerms contains newHeapKey)) {
-                  terms.put(newHeapKey, newHeapTerm)
-                  definedTerms += newHeapKey
-                }
-              /*case IFunApp(allocResCtr, Seq(heapTerm,
-              IFunApp(heapTheory.nthAddr, Seq(IIntLit(n))))) => println(
-                Console.RED + "newHeap(" + args + Console.RESET)
-                if (!(definedTerms contains newHeapKey)) {
-                  terms.put(newHeapKey, heapTerm)
-                  definedTerms += newHeapKey
-                }*/
-              case _ =>
-            }
-        }
-      }*/
 
-      /*for (a <- allocResAtoms) {
-        val key = (a.last.constant, allocResCtor.resSort)
-        if(!(definedTerms contains key)) {
-          val term : ITerm = terms getOrElse(key, -1)
-          if (term != IIntLit(-1)) {
-            val heapKey = (a.head.constant, this)
-            if (definedTerms contains heapKey) {
-              val heapTerm : ITerm = terms.getOrElse(heapKey, -1)
-              val addrTerm : ITerm = term match {
-                case IFunApp(allocResCtor, Seq(_, t)) => t
-                case _ => -1
-              }
-              if(addrTerm != IIntLit(-1)) {
-                val newTerm = allocResCtor(heapTerm, addrTerm)
-                terms.put(key, newTerm)
-                definedTerms += key
-              }
-            }
-          }
+      // This atom (should be only one in model) has the form emptyHeap(heapId)
+      for (a <- emptyHeapAtoms) {
+        val heapKey = (a(0).constant, this)
+        if (!(definedTerms contains heapKey)) {
+          terms.put(heapKey, emptyHeap())
+          definedTerms += heapKey
         }
-      }*/
+      }
+
     }
   }
 
@@ -311,7 +274,6 @@ class Heap(heapSortName : String, addressSortName : String,
   private def _isAlloc(h: ITerm , p: ITerm) : IFormula =
     counter(h) >= p & p > 0
 
-  // todo: what about writing a sort other than ObjectSort to the heap?
   val triggeredAxioms = (
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
       _isAlloc(h, p) ==> (read(write(h, p, o), p) === o),
@@ -325,7 +287,7 @@ class Heap(heapSortName : String, addressSortName : String,
 
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
       _isAlloc(h, p) ==> (counter(write(h, p, o)) === counter(h)),
-      counter(write(h, p, o)))))) &
+      write(h, p, o))))) &
 
     HeapSort.all(h => AddressSort.all(p => trig(
       !_isAlloc(h, p) ==> (read(h, p) === _defObj),
@@ -346,6 +308,8 @@ class Heap(heapSortName : String, addressSortName : String,
 
   val inductionAxioms = (
     counter(emptyHeap()) === 0 &
+    //HeapSort.all(h => trig(
+    //  (counter(h) > 0) <=> (h =/= emptyHeap()), counter(h))) &
 
     HeapSort.all(h => trig(
       counter(h) >= 0,
