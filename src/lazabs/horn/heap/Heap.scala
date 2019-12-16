@@ -66,8 +66,9 @@ object Heap {
     override val name = sortName
 
     override lazy val individuals : Stream[ITerm] =
-      emptyHeap() #:: (for (t <- Sort.Nat.individuals;
-        obj <- ObjectSort.individuals) yield newHeap(alloc(t, obj)))
+      emptyHeap() #:: (for (t <- individuals;
+                            obj <- ObjectSort.individuals)
+        yield newHeap(alloc(t, obj)))
 
     override def decodeToTerm(
                  d : IdealInt,
