@@ -47,7 +47,7 @@ object Heap {
 
   class Address(sortName : String,
                 heapTheory : Heap) extends ProxySort(Sort.Nat) {
-    import IExpression._
+    import IExpression.toFunApplier
 
     override val name = sortName
     override def decodeToTerm(
@@ -55,14 +55,20 @@ object Heap {
                  assignment : GMap[(IdealInt, Sort), ITerm]) : Option[ITerm] =
       Some(heapTheory.nthAddr(d.intValue))
 
-   // override individuals : Stream[ITerm] = for (t <- Sort.Nat.individuals) yield nthAddr(t)
+    override lazy val individuals : Stream[ITerm] =
+      for (t <- Sort.Nat.individuals) yield heapTheory.nthAddr(t)
   }
 
   class HeapSort(sortName : String,
                  heapTheory : Heap) extends ProxySort(Sort.Nat) {
-    import IExpression._
-
+    import IExpression.{i, toFunApplier}
+    import heapTheory.{emptyHeap, newHeap, alloc, ObjectSort}
     override val name = sortName
+
+    override lazy val individuals : Stream[ITerm] =
+      emptyHeap() #:: (for (t <- Sort.Nat.individuals;
+        obj <- ObjectSort.individuals) yield newHeap(alloc(t, obj)))
+
     override def decodeToTerm(
                  d : IdealInt,
                  assignment : GMap[(IdealInt, Sort), ITerm]) : Option[ITerm] = {
@@ -84,12 +90,8 @@ object Heap {
       val readAtoms = getAtoms(read)
       val counterAtoms = getAtoms(counter)
       val emptyHeapAtoms = getAtoms(emptyHeap)
-      val allocAtoms = getAtoms(alloc)
 
-      /*val allocResCtorPred = heapTheory.AllocResADT.constructorPreds.head
-      val allocResCtor = heapTheory.AllocResADT.constructors.head
-      val allocResAtoms = model.predConj positiveLitsWithPred allocResCtorPred*/
-
+      import IExpression.{toFunApplier, i}
       /**
        * Helper function to create a heap term recursively. Writes defObj in all
        * places except the last.
@@ -178,10 +180,8 @@ object Heap {
           definedTerms += heapKey
         }
       }
-
     }
   }
-
 }
 
 /**
@@ -198,7 +198,7 @@ class Heap(heapSortName : String, addressSortName : String,
     extends Theory {
   import Heap._
   //-BEGIN-ASSERTION-///////////////////////////////////////////////////////////
-  Debug.assertCtor(AC, // todo: redundant with the one in ADT or have it here too?
+  Debug.assertCtor(AC,
     ctorSignatures forall {
       case (_, sig) =>
         ((sig.arguments map (_._2)) ++ List(sig.result)) forall {
@@ -208,22 +208,18 @@ class Heap(heapSortName : String, addressSortName : String,
         }
     })
   //-END-ASSERTION-/////////////////////////////////////////////////////////////
-
-  val ObjectADT = new ADT(sortNames, ctorSignatures)
-
-
-  // todo: good first approx.
-  // start with the AddressSort
-  // change it to a proxy sort underlying: Nat => Addr
-  // Numbers to Terms (nthAddr)
-  val HeapSort = new HeapSort(heapSortName, this)
   val AddressSort = new Address(addressSortName, this)
+  val HeapSort = new HeapSort(heapSortName, this)
+
+  val nthAddr = new MonoSortedIFunction("nthAddr", List(Sort.Nat), AddressSort,
+    false, false) // todo: part of private API?
+  val ObjectADT = new ADT(sortNames, ctorSignatures)
   val ObjectSort = ObjectADT.sorts.head
 
   /** Create return sort of alloc as an ADT: Heap x Address */
   private val AllocResCtorSignature = ADT.CtorSignature(
     List(("newHeap", ADT.OtherSort(HeapSort)),
-         ("newAddress", ADT.OtherSort(AddressSort))), ADT.ADTSort(0))
+      ("newAddress", ADT.OtherSort(AddressSort))), ADT.ADTSort(0))
   private val AllocResADT = new ADT(List("AllocRes"),
     List(("AllocRes", AllocResCtorSignature)))
   val AllocResSort = AllocResADT.sorts.head
@@ -246,7 +242,7 @@ class Heap(heapSortName : String, addressSortName : String,
    * nthAddr  : Nat                  --> Nat
    * ***************************************************************************
    * */
-  val emptyHeap = new MonoSortedIFunction("emptyHeap", argSorts = List(),
+  lazy val emptyHeap = new MonoSortedIFunction("emptyHeap", argSorts = List(),
     resSort = HeapSort, _partial = false, _relational = false)
   val alloc = new MonoSortedIFunction("alloc", List(HeapSort, ObjectSort),
     AllocResSort, false, false)
@@ -260,8 +256,6 @@ class Heap(heapSortName : String, addressSortName : String,
 
   val counter = new MonoSortedIFunction("counter", List(HeapSort),
     Sort.Nat, false, false)
-  val nthAddr = new MonoSortedIFunction("nthAddr", List(Sort.Nat), Sort.Nat,
-    false, false) // todo: part of private API?
 
   val functions = List(emptyHeap, alloc, read, write,
                        nullAddr,
