@@ -116,6 +116,17 @@ class DevTests extends FlatSpec {
       SatStep(x > 0)
     )
 
+    TestCase (
+      "Model generation case 6",
+      CommonAssert(
+        isAlloc(h1, p),
+        p === nthAddr(2),
+        h3 === newHeap(alloc(emptyHeap(), wrappedInt(41))),
+        h1 === newHeap(alloc(h3, wrappedInt(40))),
+        h2 === write(write(h1, nullAddr(), wrappedInt(42)), p, wrappedInt(43))
+      ),
+      SatStep(h2 === emptyHeap())
+    )
     "..." should "pass" in {
       assert(getRes._1 == getRes._2)
     }

@@ -211,6 +211,8 @@ class Heap(heapSortName : String, addressSortName : String,
   //-END-ASSERTION-/////////////////////////////////////////////////////////////
   val AddressSort = new Address(addressSortName, this)
   val HeapSort = new HeapSort(heapSortName, this)
+  val emptyHeap = new MonoSortedIFunction("emptyHeap", argSorts = List(),
+    resSort = HeapSort, _partial = false, _relational = false)
 
   val nthAddr = new MonoSortedIFunction("nthAddr", List(Sort.Nat), AddressSort,
     false, false) // todo: part of private API?
@@ -243,8 +245,6 @@ class Heap(heapSortName : String, addressSortName : String,
    * nthAddr  : Nat                  --> Nat
    * ***************************************************************************
    * */
-  lazy val emptyHeap = new MonoSortedIFunction("emptyHeap", argSorts = List(),
-    resSort = HeapSort, _partial = false, _relational = false)
   val alloc = new MonoSortedIFunction("alloc", List(HeapSort, ObjectSort),
     AllocResSort, false, false)
   val read = new MonoSortedIFunction("read", List(HeapSort, AddressSort),
@@ -363,17 +363,25 @@ class Heap(heapSortName : String, addressSortName : String,
     (Preproc.visit(f, ()).asInstanceOf[IFormula], signature)
 
   private object Preproc extends CollectingVisitor[Unit, IExpression] {
+    private def funMatches (e : IExpression, f : IFunction) : Boolean = {
+      e match {
+        case IFunApp(`f`, _) => true
+        case _ => false
+      }
+    }
     def postVisit(t : IExpression, arg : Unit,
                   subres : Seq[IExpression]) : IExpression = t match {
-      case IAtom(`isAlloc`, Seq(_, IFunApp(`nullAddr`, _))) => false
-      case IAtom(`isAlloc`, Seq(h, p)) =>
-        _isAlloc(h, p)
-      case IFunApp(`nullAddr`, _) => 0 // todo do these cases make sense?
-      case IFunApp(`nthAddr`, Seq(n)) => n
-      case IFunApp(`write`, Seq(_, IFunApp(`nullAddr`, _), _)) => emptyHeap()
-      case IFunApp(`read`, Seq(_, IFunApp(`nullAddr`, _))) => _defObj
-      case t => //println("preprocess: " + t + " " + t.getClass)
-        t update subres
+      case IAtom(`isAlloc`, _) if subres(1) == i(0) => false
+      case IAtom(`isAlloc`, _) =>
+        _isAlloc(subres(0).asInstanceOf[ITerm], subres(1).asInstanceOf[ITerm])
+      case IFunApp(`nullAddr`, _) =>  i(0)
+      case IFunApp(`nthAddr`, _) => subres.head
+      case IFunApp(`write`, _) if subres(1) == i(0) => emptyHeap()
+      case IFunApp(`write`, _) if funMatches(subres(0), `emptyHeap`) =>
+        emptyHeap()
+      case IFunApp(`read`, _) if subres(1) == i(0) => _defObj
+      case IFunApp(`read`, _) if funMatches(subres(0), `emptyHeap`) => _defObj
+      case t => t update subres
     }
   }
   /**
