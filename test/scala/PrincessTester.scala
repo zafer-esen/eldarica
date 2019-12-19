@@ -1,12 +1,15 @@
 import ap.SimpleAPI
 import ap.SimpleAPI.ProverStatus
+import ap.parameters.Param.InputFormat
 import ap.parser._
 
 import scala.util.matching.Regex.Match
 
 class PrincessTester (p : SimpleAPI, var printModels : Boolean = true,
                       var printModelOnlyOnFail : Boolean = true,
-                      var printOnlyOnFail : Boolean = true) {
+                      var printOnlyOnFail : Boolean = true,
+                      var printProofOnlyOnFail : Boolean = true,
+                      var printProofs : Boolean = true) {
   import p._
   private var testCaseCounter : Int = 1
   private var successCounter : Int = 0
@@ -72,6 +75,10 @@ class PrincessTester (p : SimpleAPI, var printModels : Boolean = true,
       res = passed
       if (printModels && !(printModelOnlyOnFail && passed) &&
           proverResult == ProverStatus.Sat) printModel
+      else if (printProofs && !(printProofOnlyOnFail && passed) &&
+               proverResult == ProverStatus.Unsat)
+        println(certificateAsString(Map.empty,
+          InputFormat.Princess))
     }
     res
   }
