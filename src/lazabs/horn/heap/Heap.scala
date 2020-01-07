@@ -2,9 +2,11 @@ package lazabs.horn.heap
 
 import ap.basetypes.IdealInt
 import ap.Signature
+import ap.parser.IExpression.Predicate
 import ap.parser._
 import ap.types._
 import ap.proof.theoryPlugins.Plugin
+import ap.terfor.{Formula, TermOrder}
 import ap.terfor.conjunctions.Conjunction
 import ap.terfor.preds.Atom
 import ap.terfor.substitutions.VariableShiftSubst
@@ -18,7 +20,7 @@ import scala.collection.{Map => GMap}
 import scala.collection.mutable.{Map => MMap, Set => MSet}
 
 object Heap {
-  private val AC = Debug.AC_ADT // todo
+  //private val AC = Debug.AC_ADT // todo
   abstract sealed class CtorArgSort
   case class ADTSort(num : Int) extends CtorArgSort
   case class OtherSort(sort : Sort) extends CtorArgSort
@@ -197,7 +199,7 @@ class Heap(heapSortName : String, addressSortName : String,
     extends Theory {
   import Heap._
   //-BEGIN-ASSERTION-///////////////////////////////////////////////////////////
-  Debug.assertCtor(AC,
+  /*Debug.assertCtor(AC,
     ctorSignatures forall {
       case (_, sig) =>
         ((sig.arguments map (_._2)) ++ List(sig.result)) forall {
@@ -205,7 +207,7 @@ class Heap(heapSortName : String, addressSortName : String,
           case _ : OtherSort => true
           case Heap.AddressSort => true
         }
-    })
+    })*/
   //-END-ASSERTION-/////////////////////////////////////////////////////////////
   val AddressSort = new Address(addressSortName, this)
   val HeapSort = new HeapSort(heapSortName, this)
@@ -261,38 +263,31 @@ class Heap(heapSortName : String, addressSortName : String,
                        counter, nthAddr)
   val predefPredicates = List(isAlloc)
 
-  import IExpression._
-
   private val _defObj : ITerm = defaultObjectCtor(ObjectADT)
-  private def _isAlloc(h: ITerm , p: ITerm) : IFormula =
+  private def _isAlloc(h: ITerm , p: ITerm) : IFormula = {
+    import IExpression._
     counter(h) >= p & p > 0
+  }
 
-  val triggeredAxioms = (
-    HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
-      _isAlloc(h, p) ==> (read(write(h, p, o), p) === o),
-      write(h, p, o))))) &
+  val triggeredAxioms : IFormula = {
+    import IExpression._
+    (HeapSort.all(h => AddressSort.all(p => ObjectSort.all(
+      o => trig(_isAlloc(h, p) ==> (read(write(h, p, o), p) === o),
+        write(h, p, o))))) &
 
-    HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
-      _isAlloc(h, p) ==> (read(write(h, p, o), p) === o),
-      write(h, p, o))))) &
-
-    HeapSort.all(h => AddressSort.all(p1 => ObjectSort.all(o =>
-      AddressSort.all(p2 => trig(
-        _isAlloc(h, p1) /*& _isAlloc(h, p2)*/ & p1 =/= p2 ==>
-                          (read(write(h, p1, o), p2) === read(h, p2)),
+    HeapSort.all(h => AddressSort.all(p1 => ObjectSort.all(o => AddressSort.all(
+      p2 => trig(p1 =/= p2 ==> (read(write(h, p1, o), p2) === read(h, p2)),
         read(write(h, p1, o), p2)))))) &
 
-    HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
-      _isAlloc(h, p) ==> (counter(write(h, p, o)) === counter(h)),
-      write(h, p, o))))) &
+    HeapSort.all(h => AddressSort.all(p => ObjectSort.all(
+      o => trig(!_isAlloc(h, p) ==> (write(h, p, o) === h), write(h, p, o))))) &
+
+    HeapSort.all(h => AddressSort.all(p => ObjectSort.all(
+      o => trig(counter(write(h, p, o)) === counter(h), write(h, p, o))))) &
 
     HeapSort.all(h => AddressSort.all(p => trig(
-      !_isAlloc(h, p) ==> (read(h, p) === _defObj),
+      containFunctionApplications(!_isAlloc(h, p) ==> (read(h, p) === _defObj)),
       read(h, p)))) &
-
-    HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
-      !_isAlloc(h, p) ==> (write(h, p, o) === emptyHeap()),
-      write(h, p, o))))) &
 
     HeapSort.all(h => ObjectSort.all(o => trig(
       read(newHeap(alloc(h, o)), newAddr(alloc(h, o))) === o,
@@ -300,36 +295,46 @@ class Heap(heapSortName : String, addressSortName : String,
 
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
       (p =/= newAddr(alloc(h, o))) ==>
-        (read(newHeap(alloc(h, o)), p) === read(h, p)),
+      (read(newHeap(alloc(h, o)), p) === read(h, p)),
       read(newHeap(alloc(h, o)), p))))))
+  }
 
-  val inductionAxioms = (
-    counter(emptyHeap()) === 0 &
+  val inductionAxioms : IFormula = {
+    import IExpression._
+    (
+    /* counter(emptyHeap()) === 0 &*/
 
-    HeapSort.all(h => trig(
-      counter(h) >= 0,
-      counter(h))) &
+    HeapSort.all(h => trig(counter(h) >= 0, counter(h))) &
 
     HeapSort.all(h => ObjectSort.all(o => trig(
       counter(newHeap(alloc(h, o))) === counter(h) + 1 &
-        newAddr(alloc(h, o)) === counter(h) + 1,
-      alloc(h, o)))))
+      newAddr(alloc(h, o)) === counter(h) + 1, alloc(h, o)))))
+  }
 
   val theoryAxioms = triggeredAxioms & inductionAxioms
 
-  val (funPredicates, axioms, _, functionTranslation) = Theory.genAxioms(
+  val (funPredicates, axioms1, order, functionTranslation) = Theory.genAxioms(
     theoryFunctions = functions, theoryAxioms = theoryAxioms,
     genTotalityAxioms = false, otherTheories = List(ObjectADT, AllocResADT))
+
   val predicates = predefPredicates ++ funPredicates
   val functionPredicateMapping = functions zip funPredicates
   private val heapFunPredMap = new MHashMap[IFunction, Predicate]
   functionPredicateMapping.map(m => heapFunPredMap.put(m._1, m._2))
 
+  import ap.terfor.TerForConvenience._
+  implicit val o : TermOrder = order
+  val axioms2 : Formula =
+    forall(Atom(heapFunPredMap(emptyHeap), List(l(v(0))), order) ==>
+           Atom(heapFunPredMap(counter), List(l(v(0)), l(0)), order))
+
+  val axioms = Conjunction.conj(List(axioms1, axioms2), order)
+
   /**
    * Information which of the predicates satisfy the functionality axiom;
    * at some internal points, such predicates can be handled more efficiently
    */
-  val functionalPredicates = funPredicates.toSet // todo
+  val functionalPredicates : Set[Predicate] = funPredicates.toSet // todo
   /**
    * Information how interpreted predicates should be handled for
    * e-matching.
@@ -344,7 +349,7 @@ class Heap(heapSortName : String, addressSortName : String,
    * Additional axioms that are included if the option
    * <code>+genTotalityAxioms</code> is given to Princess.
    */
-  val totalityAxioms = Conjunction.TRUE // todo
+  val totalityAxioms : Conjunction = Conjunction.TRUE // todo
   /**
    * Optionally, a plug-in implementing reasoning in this theory
    */
@@ -359,10 +364,12 @@ class Heap(heapSortName : String, addressSortName : String,
    * theory, prior to sending the formula to a prover. This method
    * will be applied very early in the translation process.
    */
-  override def iPreprocess(f : IFormula, signature : Signature) = // todo
+  override def iPreprocess(f : IFormula,
+                           signature : Signature) : (IFormula, Signature) =
     (Preproc.visit(f, ()).asInstanceOf[IFormula], signature)
 
   private object Preproc extends CollectingVisitor[Unit, IExpression] {
+    import IExpression._
     private def isFunAndMatches (e : IExpression, f : IFunction) : Boolean = {
       e match {
         case IFunApp(`f`, _) => true
@@ -376,17 +383,19 @@ class Heap(heapSortName : String, addressSortName : String,
         _isAlloc(subres(0).asInstanceOf[ITerm], subres(1).asInstanceOf[ITerm])
       case IFunApp(`nullAddr`, _) =>  i(0)
       case IFunApp(`nthAddr`, _) => subres.head // todo: can this even show up?
-      case IFunApp(`write`, _) if subres(1) == i(0) => emptyHeap()
+      case IFunApp(`write`, _) if subres(1) == i(0) => subres(0)
       case IFunApp(`write`, _) if isFunAndMatches(subres(0), emptyHeap) =>
         emptyHeap()
       case IFunApp(`read`, _) if subres(1) == i(0) => _defObj
       case IFunApp(`read`, _) if isFunAndMatches(subres(0), emptyHeap) =>
         _defObj
-      case IFunApp(`newAddr`, _) if isFunAndMatches(subres(0), alloc) =>
+     /* case IFunApp(`newAddr`, _) if isFunAndMatches(subres(0), alloc) =>
         subres(0).asInstanceOf[IFunApp] match {
           case IFunApp(_, Seq(IFunApp(`emptyHeap`, _), _)) =>  i(1)
-          case IFunApp(_, ht) => counter(ht.head) + 1 // todo: bad idea?
-        }
+          case IFunApp(_, ht) =>
+            println(Console.RED_B + t + " -> " + (counter(ht.head) + 1) +Console.RESET )
+            counter(ht.head) + 1 // todo: bad idea?
+        }*/
       case IFunApp(`counter`, _) if isFunAndMatches(subres(0), newHeap) =>
         subres(0).asInstanceOf[IFunApp] match {
           case IFunApp(_, Seq(IFunApp(`alloc`, Seq(ht, _*)))) =>
@@ -394,7 +403,9 @@ class Heap(heapSortName : String, addressSortName : String,
         }
       case IFunApp(`counter`, _) if isFunAndMatches(subres(0), emptyHeap) =>
         i(0)
-      case t => t update subres
+      case t =>
+        //println(Console.YELLOW_B + t /*+ t.getClass */+ Console.RESET)
+        t update subres
     }
   }
   /**

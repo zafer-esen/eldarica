@@ -83,9 +83,9 @@ class HeapTheoryTests extends FlatSpec {
     )
 
     TestCase(
-      "For all heaps, writing to the null pointer returns the empty heap.",
-      UnsatStep(write(h, nullAddr(), o) =/= emptyHeap()),
-      SatStep(write(h, nullAddr(), o) === emptyHeap())
+      "For all heaps, writing to the null pointer returns the original heap.",
+      UnsatStep(write(h, nullAddr(), o) =/= h),
+      SatStep(write(h, nullAddr(), o) === h)
     )
 
     TestCase (
@@ -207,18 +207,18 @@ class HeapTheoryTests extends FlatSpec {
     )
 
     TestCase(
-      "Writing to an unallocated location returns the empty heap.",
+      "Writing to an unallocated location returns the same heap.",
       CommonAssert(!isAlloc(h, p)),
-      SatStep(write(h, p, o) === emptyHeap()),
-      UnsatStep(write(h, p, o) =/= emptyHeap()),
+      SatStep(write(h, p, o) === h),
+      UnsatStep(write(h, p, o) =/= h),
 
       CommonAssert(h =/= emptyHeap()),
-      SatStep(write(h, p, o) === emptyHeap()),
-      UnsatStep(write(h, p, o) =/= emptyHeap()),
+      SatStep(write(h, p, o) === h),
+      UnsatStep(write(h, p, o) =/= h),
 
       CommonAssert(p =/= nullAddr()),
-      SatStep(write(h, p, o) === emptyHeap()),
-      UnsatStep(write(h, p, o) =/= emptyHeap())
+      SatStep(write(h, p, o) === h),
+      UnsatStep(write(h, p, o) =/= h)
     )
 
     "All heap theory tests" should "pass" in {
