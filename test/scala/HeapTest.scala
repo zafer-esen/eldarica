@@ -44,17 +44,14 @@ class HeapTheoryTests extends FlatSpec {
     import pr._
     import heap._
 
-    val h = HeapSort.newConstant("h")
-    val h1 = HeapSort.newConstant("h'")
-    val p = AddressSort.newConstant("p")
-    val p1 = AddressSort.newConstant("p'")
-    val ar = AllocResSort.newConstant("ar")
-    val ar1 = AllocResSort.newConstant("ar'")
-    val o = ObjectSort.newConstant("o")
-    val o1 = ObjectSort.newConstant("o'")
-    val c = Sort.Nat.newConstant("c")
-// todo use create constant
-    addConstants(List(h, h1, p, p1, ar, ar1, o, o1, c))
+    val h = createConstant("h", HeapSort)
+    val h1 = createConstant("h'", HeapSort)
+    val p =  createConstant("p", AddressSort)
+    val p1 =  createConstant("p'", AddressSort)
+    val ar = createConstant("ar", AllocResSort)
+    val ar1 = createConstant("ar'", AllocResSort)
+    val o = createConstant("o", ObjectSort)
+    val o1 = createConstant("o'", ObjectSort)
 
     import IExpression.{all => forall, _}
 
@@ -219,6 +216,22 @@ class HeapTheoryTests extends FlatSpec {
       CommonAssert(p =/= nullAddr()),
       SatStep(write(h, p, o) === h),
       UnsatStep(write(h, p, o) =/= h)
+    )
+
+    TestCase(
+      "Extensionality over write",
+      SatStep(write(h, p, o) === write(write(h, p, o1), p, o)),
+      UnsatStep(write(h, p, o) =/= write(write(h, p, o1), p, o))
+    )
+
+    TestCase(
+      "Extensionality",
+      CommonAssert(counter(h) === counter(h1) &
+                   h =/= h1),
+      SatStep(AddressSort.ex(a =>
+        isAlloc(h, a) & (read(h, a) =/= read(h1, a)))),
+      UnsatStep(AddressSort.all(a =>
+        isAlloc(h, a) & (read(h, a) === read(h1, a))))
     )
 
     "All heap theory tests" should "pass" in {

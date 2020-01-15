@@ -5,6 +5,7 @@ import ap.types.{Sort, _}
 import ap.parser._
 import ap.theories.ADT
 import ap.util.Debug
+import lazabs.GlobalParameters
 import lazabs.Main.{StoppedException, TimeoutException}
 import lazabs.horn.concurrency.VerificationLoop.Counterexample
 import org.scalatest.FlatSpec
@@ -96,6 +97,7 @@ class HeapHornListLoop extends FlatSpec {
   val system = System(List((process, ParametricEncoder.Singleton)),
       0, None, NoTime, List(), assertions)
 
+  GlobalParameters.get.log = true
   val verificationLoop = new lazabs.horn.concurrency.VerificationLoop(system)
   val result = try {
     Console.withOut(Console.err) {
@@ -113,8 +115,9 @@ class HeapHornListLoop extends FlatSpec {
   }
 
   result match {
-    case Left(_) =>
+    case Left(x) =>
       println("SAFE")
+      println(x)
     case Right(cex : Counterexample) => {
       println("UNSAFE")
       println
