@@ -5,10 +5,9 @@ import ap.parser._
 import ap.theories.{ADT, Theory, TheoryRegistry}
 import ap.types.{MonoSortedIFunction, Sort, _}
 import ap.util.Debug
-import lazabs.ast.ASTree.Disjunction
 
 import scala.collection.mutable.{HashMap => MHashMap, Map => MMap, Set => MSet}
-import scala.collection.{Map => GMap}
+import scala.collection.{mutable, Map => GMap}
 
 object Heap {
   private val AC = Debug.AC_ADT
@@ -80,13 +79,14 @@ object Heap {
         model.predConj positiveLitsWithPred heapTheory.heapFunPredMap(f)
 
       /* Collect the relevant functions and predicates of the theory */
-      import heapTheory.{counter, emptyHeap, read}
+      import heapTheory.{counter, emptyHeap, read, allocHeap}
       val readAtoms = getAtoms(read)
+      val allocAtoms = getAtoms(allocHeap)
       val counterAtoms = getAtoms(counter)
       val emptyHeapAtoms = getAtoms(emptyHeap)
 
       import IExpression.{i, toFunApplier}
-      /**
+      /*
        * Helper function to create a heap term recursively. Writes defObj in all
        * places except the last.
        * @param n The counter value of the heap (the last location).
@@ -135,8 +135,8 @@ object Heap {
         /* if the heap term has not been assigned a term yet (and it is not
          * the empty heap) */
         if(!(definedTerms contains heapKey) && counterVal != IdealInt(0)) {
-          /* First look through all the reads to see if we can gather info
-           * on this term (more specifically we want the object value at
+          /* Look through all the reads to see if we can gather info
+           * on this term (more specifically, we want the object value at
            * the last location, i.e. at counterVal)*/
 
           /* Read atoms have the form: read(heapId, addrVal, objId)
@@ -147,13 +147,20 @@ object Heap {
             ra => ra(0).constant == heapId &&
                   ra(1).constant == counterVal) match {
             case Some(ra) => ra(2).constant
-            case None => -1 // create the term using defObj.
-          }
-          val objTerm : ITerm = objTermId match {
-            case IdealInt(-1) => heapTheory._defObj
-            case _ => terms.getOrElse((objTermId, heapTheory.ObjectSort), -1)
+            case None => allocAtoms.find( // if no reads, try to find an alloc
+              aa => aa(2).constant == heapId &&
+                    counterAtoms.exists(c => c(0).constant == aa(0).constant &&
+                               c(1).constant.intValue == counterVal.intValue-1)
+            ) match {
+              case None => IdealInt(-1)
+              case Some(aa) => aa(1).constant
+            }
           }
 
+          val objTerm : ITerm = objTermId match {
+            case IdealInt(-1) => throw new HeapException("Could not find last term from reads or allocs!")//heapTheory._defObj
+            case _ => terms.getOrElse((objTermId, heapTheory.ObjectSort), -1)
+          }
           if(objTerm != i(-1)) { // skip if objTerm is not defined yet
             val newHeapTerm = createHeapTerm(counterVal.intValue, objTerm)
             terms.put(heapKey, newHeapTerm)
@@ -232,6 +239,11 @@ class Heap(heapSortName : String, addressSortName : String,
    * write    : Heap x Address x Obj --> Heap
    * isAlloc  : Heap x Address       --> Bool
    * nthAddr  : Nat                  --> Address
+   *
+   *             0     1
+   * writeADT : Obj x Obj --> Heap
+   * * Updates the ADT's field (described by a read to 0) using value (1).
+   *
    * ***************************************************************************
    * Private functions and predicates
    * ***************************************************************************
@@ -260,6 +272,100 @@ class Heap(heapSortName : String, addressSortName : String,
   val nullAddr = new MonoSortedIFunction("null", List(), AddressSort,
     false, false)
 
+  //val writeADT = new MonoSortedIFunction("writeADT",
+  //  List(ObjectSort, ObjectSort), HeapSort, false, false)
+  /**
+   * Helper function to write to ADT fields.
+   * @param lhs : the ADT field term to be written to. This should be an IFunApp,
+   *            where the outermost function is a selector of the ADT, the
+   *            innermost function is a heap read to the ADT on the heap, the
+   *            innermost+1 function is the getter of the ADT, and any
+   *            intermediate functions are other selectors
+   *            e.g. x(getS(read(h, p))) or  (in C: p->x)
+   *                 x(s(getS(read(h, p))))  (in C: p->s.x)
+   * @param rhs : the new value for the field, e.g. 42
+   * this would return a new term, such as: S(42, y(s))
+   * @return    : the new ADT term
+   */
+  def writeADT (lhs : IFunApp, rhs : ITerm) : ITerm = {
+    def updateADT(adtStack : List[ADTFieldPath], parentTerm : ITerm,
+                  newVal : ITerm) : ITerm = {
+      adtStack match {
+        case Nil => // last level
+          newVal
+        case parent :: tl => import IExpression.toFunApplier
+          val newTerm = updateADT(tl, parentTerm, newVal)
+          val args = for (i <- parent.sels.indices) yield {
+            if (i == parent.updatedSelInd) newTerm
+            else parent.sels(i)(parentTerm)
+          }
+          parent.ctor(args : _*)
+      }
+    }
+    def sortOf(t : ITerm) : Sort = {
+      t match {
+        case c : IConstant if c.c.isInstanceOf[SortedConstantTerm] =>
+          c.c.asInstanceOf[SortedConstantTerm].sort
+        case f : IFunApp if f.fun.isInstanceOf[MonoSortedIFunction] =>
+          f.fun.asInstanceOf[MonoSortedIFunction].resSort
+        case _ => throw new HeapException("Cannot find sort of " + t)
+      }
+    }
+
+    val (adtStack, rootTerm) = generateADTUpdateStack(lhs)
+    val newTerm = updateADT(adtStack, rootTerm, rhs)
+    val readArgs = rootTerm.asInstanceOf[IFunApp].args.head.asInstanceOf[IFunApp].args // todo: fix this
+    val wrapper : MonoSortedIFunction =
+      ObjectADT.constructors.find(f => f.argSorts.size == 1 &&
+                                    f.argSorts.head == sortOf(rootTerm)) match {
+      case None => throw new HeapException(
+        "Could not find a wrapper for " + rootTerm)
+      case Some(f) => f
+    }
+    import IExpression.toFunApplier
+    write(readArgs(0), readArgs(1), wrapper(newTerm))
+  }
+
+  private case class ADTFieldPath (ctor : MonoSortedIFunction,
+                                sels : Seq[MonoSortedIFunction],
+                                updatedSelInd : Int)
+  private def generateADTUpdateStack (termPointingToADTField : IFunApp)
+  : (List[ADTFieldPath], ITerm) = {
+    val ADTUpdateStack = new mutable.Stack[ADTFieldPath]
+
+    def fillParentStack (fieldTerm : IFunApp) : ITerm = {
+      assert(fieldTerm.args.size == 1 || fieldTerm.fun == read)
+      fieldTerm.args.head match {
+        case nested : IFunApp if ObjectADT.constructors.exists(c =>
+          c.resSort == nested.fun.asInstanceOf[MonoSortedIFunction].resSort) &&
+          nested.fun != read =>
+
+          // here two possibilities:
+          // one is that the last level resSort is a getter
+          //   (e.g. getS that has the same resSort as a ctor)
+          // second is that the last level is simply the ctor
+          val ctorInd =
+            if(ObjectADT.constructors contains nested.fun) { // first case
+              ObjectADT.constructors indexOf nested.fun
+            } else { // second case
+              ObjectADT.constructors.indexWhere(c =>
+                c.resSort == nested.fun.asInstanceOf[MonoSortedIFunction].resSort)
+            }
+
+          val sels = ObjectADT.selectors(ctorInd)
+          val thisSelInd =
+            ObjectADT.selectors(ctorInd).indexWhere(s => s == fieldTerm.fun)
+          ADTUpdateStack.push(
+            ADTFieldPath(ObjectADT.constructors(ctorInd), sels, thisSelInd))
+          // then move on to nested parents
+          fillParentStack(nested)
+        case _ => fieldTerm
+      }
+    }
+    val rootTerm = fillParentStack (termPointingToADTField)
+    (ADTUpdateStack.toList, rootTerm)
+  }
+
   val counter = new MonoSortedIFunction("counter", List(HeapSort),
     Sort.Nat, false, false)
 
@@ -268,7 +374,7 @@ class Heap(heapSortName : String, addressSortName : String,
                        counter, nthAddr)
   val predefPredicates = List(isAlloc)
 
-  private val _defObj : ITerm = defaultObjectCtor(ObjectADT)
+  private def _defObj : ITerm = defaultObjectCtor(ObjectADT)
   private def _isAlloc(h: ITerm , p: ITerm) : IFormula = {
     import IExpression._
     counter(h) >= p & p > 0
@@ -290,13 +396,14 @@ class Heap(heapSortName : String, addressSortName : String,
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(
       o => trig(counter(write(h, p, o)) === counter(h), write(h, p, o))))) &
 
-    HeapSort.all(h => AddressSort.all(p => trig(
-      containFunctionApplications(!_isAlloc(h, p) ==> (read(h, p) === _defObj)),
-      read(h, p)))) &
+     containFunctionApplications(HeapSort.all(h => AddressSort.all(p => trig(
+      !_isAlloc(h, p) ==> (read(h, p) === _defObj),
+      read(h, p))))) &
 
-    HeapSort.all(h => ObjectSort.all(o => trig(
-      read(allocHeap(h, o), counter(h)+1) === o,
-      allocHeap(h, o), counter(h)+1))) &
+    HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
+      (p === counter(h)+1) ==>
+      (read(allocHeap(h, o), p) === o ),
+        read(allocHeap(h, o), p))))) &
 
     HeapSort.all(h => AddressSort.all(p => ObjectSort.all(o => trig(
       (p =/= counter(h)+1) ==>
@@ -373,9 +480,8 @@ class Heap(heapSortName : String, addressSortName : String,
         import goal.facts.arithConj.negativeEqs
         import goal.facts.predConj.positiveLitsWithPred
         val counterLits = positiveLitsWithPred(heapFunPredMap(counter))
-        val emptyHeapTerms =
-          for (l <- positiveLitsWithPred(heapFunPredMap(emptyHeap)))
-            yield l.head.head._2
+
+        //println(goal.facts + "\n")
 
         import ap.terfor.TerForConvenience._
         import ap.terfor.linearcombination.{LinearCombination => LC}
@@ -385,23 +491,20 @@ class Heap(heapSortName : String, addressSortName : String,
           new ArrayBuffer[(LC, (Term, Term, LC, LC))]
         for (neq <- negativeEqs) {
           val (lhs : Term, rhs : Term) = (neq(0)._2, neq(1)._2)
-          if (!emptyHeapTerms.contains(lhs) && !emptyHeapTerms.contains(rhs)) {
-            counterLits.find(a => a.head.head._2 == lhs) match {
-              case Some(l1) =>
-                val lhsCounterTerm : LC = l1.last
-                val rhsCounterTerm : LC =
-                  counterLits.find(a1 => a1.head.head._2 == rhs) match {
-                  case Some(l2) => l2.last
-                  case None =>
-                    println(Console.MAGENTA_B + goal.facts + Console.RESET)
-                    println(Console.RED_B + neq + Console.RESET)
-                    throw new HeapException(
-                    "Second counter lit " + "not found!")
-                }
-                neqTermArr += ((neq, (lhs, rhs, lhsCounterTerm, rhsCounterTerm)))
-              case None =>
-            }
+          val (lhsCounterInd, rhsCounterInd) =
+            (counterLits.indexWhere(a => a.head.head._2 == lhs),
+             counterLits.indexWhere(a => a.head.head._2 == rhs))
+
+          if(lhsCounterInd >= 0 && rhsCounterInd >= 0){
+            //println(Console.GREEN_B + "Both counter literals found for " + lhs + " and " + rhs  + Console.RESET)
+            val lhsCounterTerm : LC = counterLits(lhsCounterInd).last
+            val rhsCounterTerm : LC = counterLits(rhsCounterInd).last
+            neqTermArr += ((neq, (lhs, rhs, lhsCounterTerm, rhsCounterTerm)))
           }
+          /*else if (lhsCounterInd + rhsCounterInd > -2) /* at least one found*/
+          {
+            println(Console.YELLOW_B + "Only one counter literal found for " + lhs + " and " + rhs + Console.RESET)
+          } else println(Console.RED_B + "No counter literals found for " + lhs + " nor " + rhs  + Console.RESET)*/
         }
 
         implicit val to = goal.order
@@ -467,16 +570,16 @@ class Heap(heapSortName : String, addressSortName : String,
         _defObj
       case IFunApp(`counter`, _) if isFunAndMatches(subres(0), emptyHeap) =>
         i(0)
-      case IFunApp(`alloc`, _) =>
-        val h = subres(0).asInstanceOf[ITerm]
-        val o = subres(1).asInstanceOf[ITerm]
-        AllocResADT.constructors.head(allocHeap(h, o), counter(h)+1)
       case IFunApp(`newHeap`, _) if isFunAndMatches(subres(0), alloc) =>
         val Seq(h, o) = subres(0).asInstanceOf[IFunApp].args
         allocHeap(h, o)
       case IFunApp(`newAddr`, _) if isFunAndMatches(subres(0), alloc) =>
         val Seq(h, _) = subres(0).asInstanceOf[IFunApp].args
         counter(h) + 1
+      case IFunApp(`alloc`, _) =>
+        val h = subres(0).asInstanceOf[ITerm]
+        val o = subres(1).asInstanceOf[ITerm]
+        AllocResADT.constructors.head(allocHeap(h, o), counter(h)+1)
       case t =>
         /*println(Console.YELLOW_B + t + Console.GREEN_B + " " +
                 t.getClass + Console.RESET)

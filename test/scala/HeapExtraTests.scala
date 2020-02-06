@@ -40,7 +40,13 @@ class HeapTheoryExtraTests extends FlatSpec {
     import pr._
     import heap._
     val h = HeapSort.newConstant("h")
+    val h1 = createConstant("h1", HeapSort)
     val ar = AllocResSort.newConstant("ar")
+    val p1 =  createConstant("p1", AddressSort)
+    val p2 =  createConstant("p2", AddressSort)
+    val x = createConstant("x")
+    val o = createConstant("o", ObjectSort)
+
 
     addConstants(List(h, ar))
 
@@ -48,11 +54,11 @@ class HeapTheoryExtraTests extends FlatSpec {
 
     val priTests = new PrincessTester(pr,
       printModels = true,
-      printModelOnlyOnFail = true,
-      printOnlyOnFail = true)
+      printModelOnlyOnFail = false,
+      printOnlyOnFail = false)
     import priTests._
 
-    TestCase (
+    /*TestCase (
       "Reading back written value after chain allocation and a write.",
       CommonAssert(
         ar === alloc(newHeap(
@@ -78,6 +84,33 @@ class HeapTheoryExtraTests extends FlatSpec {
       SatStep(read(h, newAddr(ar)) === wrappedInt(50))
     )
 
+    TestCase(
+      "list-001-fail.c-1",
+      CommonAssert(h === newHeap(alloc(emptyHeap(), wrappedS(struct_S(0))))),
+      CommonAssert(p1 === newAddr(alloc(emptyHeap(), wrappedS(struct_S(0))))),
+      CommonAssert(p2 === p1),
+      SatStep(p1 === p2)
+    )*/
+    TestCase(
+      "list-001-fail.c-2",
+      //SatStep(defObj() =/= wrappedS(struct_S(0)))
+      /*SatStep( h === emptyHeap() &&&
+        newHeap(alloc(emptyHeap(), defObj())) ===
+              newHeap(alloc(h, wrappedS(struct_S(0)))))*/
+      /*UnsatStep( h === emptyHeap() &&&
+               allocHeap(emptyHeap(), defObj()) ===
+               allocHeap(h, wrappedS(struct_S(0))))*/
+//      SatStep( h === newHeap(alloc(emptyHeap(), wrappedS(struct_S(42)))) &&&
+ //              p1 === newAddr(alloc(emptyHeap(), wrappedS(struct_S(42)))) &&&
+ //              o === read(h, p1))
+      SatStep(   h === newHeap(alloc(emptyHeap(), wrappedS(struct_S(0)))) &&&
+                 p1 === newAddr(alloc(emptyHeap(), wrappedS(struct_S(0)))) &&&
+                 //p2 === p1 &&&
+                 o === (getS(read(h, p1)))// &&&
+                 //p1 === p2
+      )
+
+    )
     "All extra heap theory tests" should "pass" in {
       assert(getRes._1 == getRes._2)
     }
