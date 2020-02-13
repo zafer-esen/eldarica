@@ -25,7 +25,7 @@ object Heap {
     s match {
       case t : ADTSort => ADT.ADTSort(t.num)
       case t : OtherSort => ADT.OtherSort(t.sort)
-      case AddressSort => ADT.OtherSort(Sort.Nat) // todo: might be wrong
+      case AddressSort => ADT.OtherSort(Sort.Nat) // todo: probably wrong
   }
 
   private implicit def HeapSortToADTSort(l : Seq[(String, Heap.CtorSignature)]):
@@ -158,7 +158,7 @@ object Heap {
           }
 
           val objTerm : ITerm = objTermId match {
-            case IdealInt(-1) => throw new HeapException("Could not find last term from reads or allocs!")//heapTheory._defObj
+            case IdealInt(-1) => heapTheory._defObj
             case _ => terms.getOrElse((objTermId, heapTheory.ObjectSort), -1)
           }
           if(objTerm != i(-1)) { // skip if objTerm is not defined yet
@@ -374,7 +374,7 @@ class Heap(heapSortName : String, addressSortName : String,
                        counter, nthAddr)
   val predefPredicates = List(isAlloc)
 
-  private def _defObj : ITerm = defaultObjectCtor(ObjectADT)
+  private val _defObj : ITerm = defaultObjectCtor(ObjectADT)
   private def _isAlloc(h: ITerm , p: ITerm) : IFormula = {
     import IExpression._
     counter(h) >= p & p > 0

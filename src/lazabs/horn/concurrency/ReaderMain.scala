@@ -55,6 +55,7 @@ object ReaderMain {
             println("chan_receive(" + chan + ")")
           case ParametricEncoder.NoSync =>
             println
+          case _ =>
         }
       }
     }
