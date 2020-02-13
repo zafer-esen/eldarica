@@ -2,7 +2,7 @@
 lazy val commonSettings = Seq(
   name := "Eldarica",
   organization := "uuverifiers",
-  version := "2.0.2",
+  version := "2.1.0",
   scalaVersion := "2.11.12",
   crossScalaVersions := Seq("2.11.12", "2.12.8"),
   publishTo := Some(Resolver.file("file",  new File( "/home/wv/public_html/maven/" )) )
@@ -143,6 +143,6 @@ lazy val root = (project in file(".")).
     //
     resolvers += "uuverifiers" at "http://logicrunch.research.it.uu.se/maven/",
     //libraryDependencies += "uuverifiers" %% "princess" % "2019-11-20"
-     libraryDependencies += "uuverifiers" %% "princess" % "nightly-SNAPSHOT"
+    libraryDependencies += "uuverifiers" %% "princess" % "nightly-SNAPSHOT"
   )
   //
