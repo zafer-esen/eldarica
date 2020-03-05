@@ -18,6 +18,7 @@ class HeapTheoryTests extends FlatSpec {
       ("WrappedInt", Heap.CtorSignature(List(("getInt",
         Heap.OtherSort(Sort.Integer))), ObjSort)),
       ("WrappedS", Heap.CtorSignature(List(("getS", StructSSort)), ObjSort)),
+      ("WrappedAddr", Heap.CtorSignature(List(("getAddr", Heap.AddressCtorArgsSort)), ObjSort)),
       ("struct_S", Heap.CtorSignature(List(("x", Heap.OtherSort(Sort.Integer))),
         StructSSort)),
       ("defObj", Heap.CtorSignature(List(), ObjSort))),
@@ -31,10 +32,12 @@ class HeapTheoryTests extends FlatSpec {
 
   val Seq(wrappedInt,
           wrappedS,
+          wrappedAddr,
           struct_S,
           defObjCtr) = heap.ObjectADT.constructors
   val Seq(Seq(getInt),
           Seq(getS),
+          Seq(getAddr),
           Seq(sel_x), _*) = heap.ObjectADT.selectors
 
   import IExpression.toFunApplier
@@ -210,12 +213,22 @@ class HeapTheoryTests extends FlatSpec {
       UnsatStep(write(h, p, o) =/= h),
 
       CommonAssert(h =/= emptyHeap()),
-      SatStep(write(h, p, o) === h),
+      SatStep(write(h, p, o) === h & h =/= emptyHeap()),
       UnsatStep(write(h, p, o) =/= h),
 
       CommonAssert(p =/= nullAddr()),
       SatStep(write(h, p, o) === h),
       UnsatStep(write(h, p, o) =/= h)
+    )
+
+    TestCase(
+      "Allocating and dereferencing pointer to pointer.",
+      CommonAssert(alloc(emptyHeap(), wrappedInt(42)) === ar &
+                   p === newAddr(ar) & h === newHeap(ar)),
+      CommonAssert(alloc(h, wrappedAddr(p)) === ar1 &
+                   p1 === newAddr(ar1) & h1 === newHeap(ar1)),
+      SatStep(read(h, getAddr(read(h1,p1))) === wrappedInt(42)),
+      UnsatStep(read(h, getAddr(read(h1,p1))) =/= wrappedInt(42))
     )
 
     TestCase(

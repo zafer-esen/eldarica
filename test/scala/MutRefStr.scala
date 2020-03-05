@@ -20,9 +20,9 @@ class MutRefStr extends FlatSpec {
       ("WrappedChild", Heap.CtorSignature(List(("getChild", ChildSort)), ObjSort)),
       ("WrappedParent", Heap.CtorSignature(List(("getParent", ParentSort)), ObjSort)),
       ("structChild", Heap.CtorSignature(
-        List(("data", Heap.OtherSort(Sort.Integer)), ("p", Heap.AddressSort)), ChildSort)),
+        List(("data", Heap.OtherSort(Sort.Integer)), ("p", Heap.AddressCtorArgsSort)), ChildSort)),
       ("structParent", Heap.CtorSignature(
-        List(("child1", Heap.AddressSort), ("child2", Heap.AddressSort)), ParentSort)),
+        List(("child1", Heap.AddressCtorArgsSort), ("child2", Heap.AddressCtorArgsSort)), ParentSort)),
       ("defObj", Heap.CtorSignature(List(), ObjSort))),
     defObjCtor)
 

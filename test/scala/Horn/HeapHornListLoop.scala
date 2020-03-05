@@ -12,7 +12,7 @@ import org.scalatest.FlatSpec
 import lazabs.horn.heap.Heap
 
 class HeapHornListLoop extends FlatSpec {
-  Debug enableAllAssertions true
+  Debug enableAllAssertions false
 
   val NullObjName = "NullObj"
   val ObjSort = Heap.ADTSort(0)
@@ -23,7 +23,7 @@ class HeapHornListLoop extends FlatSpec {
         Heap.OtherSort(Sort.Integer))), ObjSort)),
       ("WrappedNode", Heap.CtorSignature(List(("getNode", NodeSort)), ObjSort)),
       ("structNode", Heap.CtorSignature(
-        List(("data", Heap.OtherSort(Sort.Integer)), ("next", Heap.AddressSort)), NodeSort)),
+        List(("data", Heap.OtherSort(Sort.Integer)), ("next", Heap.AddressCtorArgsSort)), NodeSort)),
       ("defObj", Heap.CtorSignature(List(), ObjSort))),
     defObjCtor)
 

@@ -6,7 +6,7 @@ import ap.theories.{ADT, Theory, TheoryRegistry}
 import ap.types.{MonoSortedIFunction, Sort, _}
 import ap.util.Debug
 
-import scala.collection.mutable.{HashMap => MHashMap, Map => MMap, Set => MSet}
+import scala.collection.mutable.{ArrayBuffer, HashMap => MHashMap, Map => MMap, Set => MSet}
 import scala.collection.{mutable, Map => GMap}
 
 object Heap {
@@ -14,26 +14,11 @@ object Heap {
   abstract sealed class CtorArgSort
   case class ADTSort(num : Int) extends CtorArgSort
   case class OtherSort(sort : Sort) extends CtorArgSort
-  case object AddressSort extends CtorArgSort
+  case object AddressCtorArgsSort extends CtorArgSort
   case class CtorSignature(arguments : Seq[(String, CtorArgSort)],
                            result : ADTSort)
 
   class HeapException(m : String) extends Exception(m)
-
-  /** implicit converters from Heap.CtorArgSort to ADT.CtorArgSort */
-  private implicit def HeapSortToADTSort(s : CtorArgSort) : ADT.CtorArgSort =
-    s match {
-      case t : ADTSort => ADT.ADTSort(t.num)
-      case t : OtherSort => ADT.OtherSort(t.sort)
-      case AddressSort => ADT.OtherSort(Sort.Nat) // todo: probably wrong
-  }
-
-  private implicit def HeapSortToADTSort(l : Seq[(String, Heap.CtorSignature)]):
-  Seq[(String, ADT.CtorSignature)] = {
-    for (s <- l) yield (s._1, ADT.CtorSignature(
-      for (arg <- s._2.arguments) yield (arg._1, HeapSortToADTSort(arg._2)),
-      ADT.ADTSort(s._2.result.num)))
-  }
 
   class Address(sortName : String,
                 heapTheory : Heap) extends ProxySort(Sort.Nat) {
@@ -79,106 +64,99 @@ object Heap {
         model.predConj positiveLitsWithPred heapTheory.heapFunPredMap(f)
 
       /* Collect the relevant functions and predicates of the theory */
-      import heapTheory.{counter, emptyHeap, read, allocHeap}
-      val readAtoms = getAtoms(read)
+      import heapTheory.{counter, emptyHeap, write, allocHeap}
+      val writeAtoms = getAtoms(write)
       val allocAtoms = getAtoms(allocHeap)
       val counterAtoms = getAtoms(counter)
       val emptyHeapAtoms = getAtoms(emptyHeap)
 
       import IExpression.{i, toFunApplier}
-      /*
-       * Helper function to create a heap term recursively. Writes defObj in all
-       * places except the last.
-       * @param n The counter value of the heap (the last location).
-       * @param lastObj The object to be placed at the last location.
-       * @return The created heap object.
-       */
-      def createHeapTerm(n : Int, lastObj : ITerm) : ITerm = {
-        n match{
-          case 0 => heapTheory.emptyHeap()
-          case _ if n > 0 =>
-            createNestedHeapTerm(n, heapTheory.emptyHeap(), lastObj)
-          case _ => throw new HeapException("createNestedHeapTerm called with" +
-                                            " n: " + n + " (must be positive)")
-        }
-      }
-      def createNestedHeapTerm(n : Int, initTerm : ITerm, lastObj : ITerm)
-      : ITerm = {
+
+      def createHeapTerm(contents : Seq[IdealInt]) : ITerm = {
+        assume(contents.nonEmpty) // emptyHeap should be handled separately
         import heapTheory.{_defObj, alloc, newHeap}
-        n match{
-          case 1 => newHeap(alloc(initTerm, lastObj))
-          case _ => createNestedHeapTerm(n-1,
-            newHeap(alloc(initTerm, _defObj)), lastObj)
+        var currentTerm = emptyHeap()
+        for (objTermId <- contents) {
+          val objTerm = terms.getOrElse((objTermId, heapTheory.ObjectSort),
+            heapTheory._defObj)
+          currentTerm = newHeap(alloc(currentTerm, objTerm))
         }
+        currentTerm
       }
 
-      /*
-       * Every (unique) heap has an associated counter value in the model.
-       * So we are first looking at each counter to obtain the heap ids and
-       * counter values. Empty heap has counter value 0.
-       *
-       * Then, for each heap id, we will go through reads to get the value of
-       * the object at the last location, which will enable us to create the
-       * new heap term.
-       *
-       * If the heap term (h) cannot be found in reads, it might be just that it
-       * was never allocated nor written to from a previous heap
-       * (i.e. only isAlloc(h) is asserted). Then this heap term is created
-       * using defObj at its last location.
-       * */
+      val heapContents = new MHashMap[IdealInt, ArrayBuffer[IdealInt]] //[eh->[],h1:[1,2],...]
 
-       /* counter atoms have the form: counter(heapId, counterVal) */
-      for (a <- counterAtoms) {
+      // fill in the contents for empty heaps
+      for (a <- emptyHeapAtoms) { // emptyHeap(heapId)
+          heapContents += ((a(0).constant, new ArrayBuffer[IdealInt](0)))
+      }
+      // initialize content buffers of non-empty heaps
+      // counter(heapId, counterVal)
+      for (a <- counterAtoms if a(1).constant.intValue > 0) {
         val heapId = a(0).constant
         val counterVal = a(1).constant
-        val heapKey = (heapId, this)
-        /* if the heap term has not been assigned a term yet (and it is not
-         * the empty heap) */
-        if(!(definedTerms contains heapKey) && counterVal != IdealInt(0)) {
-          /* Look through all the reads to see if we can gather info
-           * on this term (more specifically, we want the object value at
-           * the last location, i.e. at counterVal)*/
+        val contentBuffer = new ArrayBuffer[IdealInt](counterVal.intValue)
+        for (_ <- 0 until counterVal.intValue)
+          contentBuffer += -1
+        heapContents += ((heapId,contentBuffer))
+      }
 
-          /* Read atoms have the form: read(heapId, addrVal, objId)
-           * We need to find the read (if it exists), where heapId matches and
-           * addrVal = counterVal. counterVal = 0 is the empty heap.
-           * */
-          val objTermId : IdealInt = readAtoms.find(
-            ra => ra(0).constant == heapId &&
-                  ra(1).constant == counterVal) match {
-            case Some(ra) => ra(2).constant
-            case None => allocAtoms.find( // if no reads, try to find an alloc
-              aa => aa(2).constant == heapId &&
-                    counterAtoms.exists(c => c(0).constant == aa(0).constant &&
-                               c(1).constant.intValue == counterVal.intValue-1)
-            ) match {
-              case None => IdealInt(-1)
-              case Some(aa) => aa(1).constant
-            }
+      var somethingChanged = true
+      // iterate over non-empty heaps to fixed-point
+      while(somethingChanged) {
+        somethingChanged = false
+        for (a <- counterAtoms if a(1).constant.intValue > 0) {
+          val heapId = a(0).constant
+          val counterVal = a(1).constant
+          /*
+        * A heap is either created through an alloc, or through a write.
+        * If it is created through alloc, all locations except the last location
+        * (i.e., counterVal), are the same as the original heap.
+        * If it is created through write, all locations except the written
+        * location, are the same as the original heap.
+        */
+          // allocHeap(prevHeapId, obj, heapId)
+          val (prevHeapId, changedAddr, newObj) = allocAtoms
+            .find(p => p(2).constant == heapId) match {
+            case Some(p) => (p(0).constant, counterVal, p(1).constant)
+            case None => // no allocs found, then there must be a write
+              // write(prevHeapId, addr, obj, heapId)
+              writeAtoms.find(p => p(3).constant == heapId) match {
+                case Some(p) => (p(0).constant, p(1).constant, p(2).constant)
+                case None => throw new HeapException(
+                  "No allocs or writes found" + "for heap id: " + heapId)
+              }
           }
-
-          val objTerm : ITerm = objTermId match {
-            case IdealInt(-1) => heapTheory._defObj
-            case _ => terms.getOrElse((objTermId, heapTheory.ObjectSort), -1)
+          // copy all locations from previous heap, then update changed loc
+          val prevHeap = heapContents(prevHeapId)
+          val thisHeap = heapContents(heapId)
+          val changedInd = changedAddr.intValue-1
+          for (i <- prevHeap.indices if i != changedInd) {
+            if (thisHeap(i) != prevHeap(i)) somethingChanged = true
+            thisHeap(i) = prevHeap(i)
           }
-          if(objTerm != i(-1)) { // skip if objTerm is not defined yet
-            val newHeapTerm = createHeapTerm(counterVal.intValue, objTerm)
-            terms.put(heapKey, newHeapTerm)
-            definedTerms += heapKey
-          }
-        }
-        else if (!(definedTerms contains heapKey)) {
-          terms.put(heapKey, emptyHeap())
-          definedTerms += heapKey
+          thisHeap(changedInd) = newObj // this does not depend on prev heaps.
         }
       }
 
-      // This atom (should be only one in model) has the form emptyHeap(heapId)
+      // define emptyHeap terms
       for (a <- emptyHeapAtoms) {
         val heapKey = (a(0).constant, this)
         if (!(definedTerms contains heapKey)) {
           terms.put(heapKey, emptyHeap())
           definedTerms += heapKey
+        }
+      }
+
+      // define rest of the heap terms
+      for (a <- counterAtoms if a(1).constant.intValue > 0) {
+        val heapId = a(0).constant
+        val heapKey = (heapId, this)
+        val heapTerm = createHeapTerm(heapContents(heapId))
+        if (!(definedTerms contains heapKey) || //if this term is not defined
+            (terms(heapKey) != heapTerm)) { // or has changed
+          terms.put(heapKey, heapTerm) //update the heap term
+          if (!(definedTerms contains heapKey)) definedTerms += heapKey
         }
       }
     }
@@ -205,7 +183,7 @@ class Heap(heapSortName : String, addressSortName : String,
         ((sig.arguments map (_._2)) ++ List(sig.result)) forall {
           case Heap.ADTSort(id) => id >= 0 && id < sortNames.size
           case _ : OtherSort => true
-          case Heap.AddressSort => true
+          case Heap.AddressCtorArgsSort => true
         }
     })
   //-END-ASSERTION-/////////////////////////////////////////////////////////////
@@ -216,6 +194,22 @@ class Heap(heapSortName : String, addressSortName : String,
 
   val nthAddr = new MonoSortedIFunction("nthAddr", List(Sort.Nat), AddressSort,
     false, false) // todo: part of private API?
+
+  /** implicit converters from Heap.CtorArgSort to ADT.CtorArgSort */
+  private implicit def HeapSortToADTSort(s : CtorArgSort) : ADT.CtorArgSort =
+    s match {
+      case t : ADTSort => ADT.ADTSort(t.num)
+      case t : OtherSort => ADT.OtherSort(t.sort)
+      case AddressCtorArgsSort => ADT.OtherSort(AddressSort)
+    }
+
+  private implicit def HeapSortToADTSort(l : Seq[(String, Heap.CtorSignature)]):
+  Seq[(String, ADT.CtorSignature)] = {
+    for (s <- l) yield (s._1, ADT.CtorSignature(
+      for (arg <- s._2.arguments) yield (arg._1, HeapSortToADTSort(arg._2)),
+      ADT.ADTSort(s._2.result.num)))
+  }
+
   val ObjectADT = new ADT(sortNames, ctorSignatures)
   val ObjectSort = ObjectADT.sorts.head
 
