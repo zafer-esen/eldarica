@@ -266,8 +266,6 @@ class Heap(heapSortName : String, addressSortName : String,
   val nullAddr = new MonoSortedIFunction("null", List(), AddressSort,
     false, false)
 
-  //val writeADT = new MonoSortedIFunction("writeADT",
-  //  List(ObjectSort, ObjectSort), HeapSort, false, false)
   /**
    * Helper function to write to ADT fields.
    * @param lhs : the ADT field term to be written to. This should be an IFunApp,
@@ -277,6 +275,8 @@ class Heap(heapSortName : String, addressSortName : String,
    *            intermediate functions are other selectors
    *            e.g. x(getS(read(h, p))) or  (in C: p->x)
    *                 x(s(getS(read(h, p))))  (in C: p->s.x)
+   *            note that this method works for writing to non-ADTs as well,
+   *            if lhs is provided as a read Object (e.g. getInt(read(h,p))).
    * @param rhs : the new value for the field, e.g. 42
    * this would return a new term, such as: S(42, y(s))
    * @return    : the new ADT term
