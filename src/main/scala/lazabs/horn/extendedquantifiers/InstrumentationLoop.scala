@@ -130,9 +130,9 @@ class InstrumentationLoop (clauses : Clauses,
         Console.withErr(outStream) {
           val builder =
             new StaticAbstractionBuilder(
-              instrumenter.instrumentedClauses, //simpClauses2,
+              instrumenter.instrumentationResult.instrumentedClauses,
               templateBasedInterpolationType,
-              instrumenter.branchPredicates) //remainingBranchPredicates)
+              instrumenter.instrumentationResult.branchPredicates)
           val autoAbstractionMap =
             builder.abstractionRecords
 
@@ -161,47 +161,39 @@ class InstrumentationLoop (clauses : Clauses,
         DagInterpolator.interpolatingPredicateGenCEXAndOr _
       }
 
-    def computeAtoms(inst : Map[Predicate, Conjunction]) : Set[IAtom] = {
-      inst.map{t =>
-        IAtom(t._1, Seq(IExpression.i(
-          t._2.arithConj.positiveEqs.head.constant.intValue *
-          (-1))))
-      }.toSet
-    }
-
-    def pickInstrumentation(space : Set[Map[Predicate, Conjunction]],
-                            ineligiblePrefixes : Set[Set[IAtom]]) :
-    Option[Map[Predicate, Conjunction]] = {
-      var candidate : Option[Map[Predicate, Conjunction]] = None
-      for (inst <- space if candidate isEmpty) {
-        val instAtoms = computeAtoms(inst)
-        if (ineligiblePrefixes.exists(prefix => prefix subsetOf instAtoms)) {
-          // nothing
-        } else candidate = Some(inst)
-      }
-      candidate
-    }
+//    def pickInstrumentation(space : Set[Map[Predicate, Conjunction]],
+//                            ineligiblePrefixes : Set[Set[IAtom]]) :
+//    Option[Map[Predicate, Conjunction]] = {
+//      var candidate : Option[Map[Predicate, Conjunction]] = None
+//      for (inst <- space if candidate isEmpty) {
+//        val instAtoms = computeAtoms(inst)
+//        if (ineligiblePrefixes.exists(prefix => prefix subsetOf instAtoms)) {
+//          // nothing
+//        } else candidate = Some(inst)
+//      }
+//      candidate
+//    }
 
     val incSolver =
       new IncrementalHornPredAbs(
-        instrumenter.instrumentedClauses,
+        instrumenter.instrumentationResult.instrumentedClauses,
         curHints.toInitialPredicates,
-        instrumenter.branchPredicates,
+        instrumenter.instrumentationResult.branchPredicates,
         interpolator)
 
     lastSolver = incSolver
 
-    Random.setSeed(42)
-    val searchSpace = new MHashSet[Map[Predicate, Conjunction]]
-    Random.shuffle(instrumenter.searchSpace).foreach { search =>
-      searchSpace += search.toMap
-    }
+//    Random.setSeed(42)
+//    val searchSpace = new MHashSet[Map[Predicate, Conjunction]]
+//    Random.shuffle(instrumenter.searchSpace).foreach { search =>
+//      searchSpace += search.toMap
+//    }
 
     val postponedSearches = new MHashSet[Map[Predicate, Conjunction]]
 
-    val ineligiblePrefixes = new MHashSet[Set[IAtom]]
+//    val ineligiblePrefixes = new MHashSet[Set[IAtom]]
 
-    searchSpaceSizePerNumGhostRanges += (numRanges -> searchSpace.size)
+//    searchSpaceSizePerNumGhostRanges += (numRanges -> searchSpace.size)
     println("Clauses instrumented, starting search for correct instrumentation.")
 
     var numSteps = 0
@@ -214,10 +206,12 @@ class InstrumentationLoop (clauses : Clauses,
 
     var totalExplored = 0
 
-    while(rawResult == Inconclusive && (searchSpace.nonEmpty ||
+    var searchSpaceIsEmpty = false
+
+    while(rawResult == Inconclusive && (!searchSpaceIsEmpty ||
                                         postponedSearches.nonEmpty)) {
 
-      if (searchSpace.isEmpty && postponedSearches.nonEmpty) {
+      if (searchSpaceIsEmpty && postponedSearches.nonEmpty) {
         postponedSearches.foreach(searchSpace += _)
         postponedSearches.clear()
         currentTimeout *= timeoutMultiplier
@@ -233,13 +227,16 @@ class InstrumentationLoop (clauses : Clauses,
         searchStepsPerNumGhostRanges += (numRanges -> numSteps)
 //      val instrumentation = pickInstrumentation(searchSpace.toSet,
 //                                                ineligiblePrefixes.toSet)
-
-      println("\n(" + numSteps + ") Remaining search space size: " +
-              (instrumenter.searchSpace.size - totalExplored - postponedSearches.size))
-        println("Postponed instrumentations : " + postponedSearches.size)
-        println("Selected branches: " + instrumentation.map{instr =>
-          instr._1.name + "(" + (instr._2.arithConj.positiveEqs.head.constant.
-                                      intValue * (-1)) + ")"}.mkString(", "))
+        println
+        println(s"($numSteps)")
+        println(s"  - Eliminated : $totalExplored/${instrumenter.searchSpace.size}")
+        println(s"  - Remaining  : " +
+          (instrumenter.searchSpace.size - totalExplored - postponedSearches.size) +
+          s" (+${postponedSearches.size} postponed)")
+        println("  - Selected branches: " + instrumentation.map{instr =>
+          instr._1.name + "(" + (
+            instr._2.arithConj.positiveEqs.head.constant.intValue * (-1)) + ")"}
+                                                       .mkString(", "))
 
         // assuming empty instrumentation is not in searchSpace below
         val maybeRes =
@@ -267,10 +264,10 @@ class InstrumentationLoop (clauses : Clauses,
               } else {
                 noTimeoutCount += 1
                 consecutiveTimeoutCount = 0
-                println("\ninconclusive, iterating...")
-                val prefix : Set[IAtom] = cex.subdagIterator.toList.flatMap(_.d
-                                                                             ._2.body.filter(
-                  instrumenter.branchPredicates contains _.pred)).toSet
+                println("\nspurious cex, eliminating bad instrumentations and iterating...")
+                val prefix : Set[IAtom] = cex.subdagIterator.toList.flatMap(
+                  _.d._2.body.filter(
+                    instrumenter.branchPredicates contains _.pred)).toSet
 
                 prefixCompressionCounter += 1
                 ineligiblePrefixes += prefix
@@ -283,7 +280,7 @@ class InstrumentationLoop (clauses : Clauses,
                       ineligiblePrefixes.filter(_.size < prefix.size).
                                         exists(other => other subsetOf prefix))
                     yield prefix
-                  val beforeSize        = ineligiblePrefixes.size
+                  val beforeSize = ineligiblePrefixes.size
                   redundantPrefixes.foreach(ineligiblePrefixes -=)
                   println("Compressed ineligible prefixes: " + beforeSize +
                           " to " + ineligiblePrefixes.size)
@@ -294,7 +291,7 @@ class InstrumentationLoop (clauses : Clauses,
               rawResult = Safe(solution)
           }
           case None => // timeout
-            println("Instrumentation timed out and postponed.")
+            println("  Instrumentation timed out and postponed.")
             searchSpace -= instrumentation
             postponedSearches += instrumentation
             noTimeoutCount = 0

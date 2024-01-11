@@ -30,31 +30,106 @@
 
 package lazabs.horn.extendedquantifiers
 
-import ap.parser.IExpression.Predicate
+import ap.parser.IExpression.{ConstantTerm, Predicate}
 import ap.parser._
 import lazabs.horn.bottomup.HornClauses.Clause
 import lazabs.horn.preprocessor.HornPreprocessor._
 import Util._
+import ap.api.SimpleAPI
+import ap.api.SimpleAPI.ProverStatus
+import ap.basetypes.IdealInt
 import ap.terfor.TerForConvenience.conj
 import ap.terfor.TermOrder
 import ap.terfor.conjunctions.Conjunction
 import ap.theories.TheoryRegistry
 import lazabs.horn.bottomup.HornClauses
 
-import scala.collection.mutable.{ArrayBuffer, HashMap => MHashMap,
-                                 HashSet => MHashSet}
+import scala.collection.mutable.{ArrayBuffer, HashMap => MHashMap, HashSet => MHashSet}
 
 object InstrumentingPreprocessor {
-  case class InstrumentationResult(
-    clauses                   : Clauses,
-    branchPredicates          : Set[Predicate],
-    searchSpace               : Seq[Seq[(Predicate, Conjunction)]])
+  class InstrumentationResult(val instrumentedClauses : Clauses,
+                              val branchPredicates    : Set[Predicate],
+                              numBranchesForPred      : Map[Predicate, Int]) {
+
+    /**
+     * Create one variable per branch predicate, Princess will be queried
+     * using these and a blocking constraint to search for an instrumentation.
+     */
+    private val branchPredToBranchVar = branchPredicates.map(
+      pred => pred -> IConstant(new ConstantTerm(pred.name))).toMap
+
+    private val branchSelectProver = SimpleAPI.spawn
+    branchSelectProver.addConstants(branchPredToBranchVar.values)
+    /**
+     * We constrain each branch variable to have a value between `0` to `n`,
+     * where `n` is the number of branches for the associated branch predicate.
+     */
+    branchSelectProver.addAssertion((for (pred <- branchPredicates) yield {
+      val v = branchPredToBranchVar(pred)
+      0 <= v &&& v < numBranchesForPred(pred)
+    }).reduceOption(_ &&& _).getOrElse(IExpression.i(true)))
+
+
+
+//    private def computeBranchAtoms(branchPredToValue : Map[Predicate, IdealInt])
+//    : Set[IAtom] =
+//      (for ((branchPred, value) <- branchPredToValue)
+//        yield IAtom(branchPred, Seq(value))).toSet
+
+    def tryGetInstrumentation : (SimpleAPI.ProverStatus.Value,
+                                 Map[Predicate, Conjunction]) = {
+      import branchSelectProver._
+      branchSelectProver.??? match {
+        case s@ProverStatus.Sat =>
+          val conjs = for ((pred, v) <- branchPredToBranchVar) yield {
+            pred -> getConjunctionForBranch(eval(v).intValue)
+          }
+          (s, conjs)
+        case s =>
+          (s, Map())
+      }
+    }
+
+    /**
+     * The branch atoms will be something like Br0(0), Br1(1), ...
+     * We assert that !(Br0 === 0 & Br1 === 1 & ...), or equivalently
+     *                 (Br0 =/= 0 | Br1 =/= 1 | ...) .
+     */
+    def blockBranchAtoms(branchAtoms : Set[IAtom]) : Unit = {
+      val blockingConstraint =
+        (for (IAtom(branchPred, value) <- branchAtoms) yield {
+          val branchVar = branchPredToBranchVar(branchPred)
+          branchVar =/= value
+        }).reduceOption(_ ||| _).getOrElse(IExpression.i(true))
+      branchSelectProver.addAssertion(blockingConstraint)
+    }
+  }
+
+  private var handlingPostponed = false
+
+  def handlePostponed(): Unit = {
+    handlingPostponed = true
+  }
+
+  /**
+   * To postpone an instrumentation, we add a constraint
+   *   !handlingPostponed ==> !(instrumentation)
+   */
+  def postponeInstrumentation(inst : Map[Predicate, Conjunction]): Unit = {
+    val blockingConstraint =
+      (for ((pred, conj) <- inst) yield {
+        val branchVar = branchPredToBranchVar(branchPred)
+        branchVar =/= value
+      }).reduceOption(_ ||| _).getOrElse(IExpression.i(true))
+  }
+
+
   // single arity (int) predicates to select an instrumentation branch
 
   // given a k, returns a conjunction to initialize one of the instrumentation
   // predicates such that only one of the clauses will be selected
   // 0 selects no instrumentation, 1 -- n selects one of the n ways to instrument.
-  def getConjunctionForBranch(k : Int) : Conjunction = {
+  private def getConjunctionForBranch(k : Int) : Conjunction = {
     import IExpression._
     val order = TermOrder.EMPTY
     conj(InputAbsy2Internal(v(0) === i(k), order))(order)
@@ -97,6 +172,10 @@ class InstrumentingPreprocessor(
     instrumentationOperators.map(op => op.exq -> op).toMap
 
   private val translators = new ArrayBuffer[BackTranslator]
+
+  /**
+   * Branch predicates control which instrumentations are enabled/disabled.
+   */
   private val branchPreds = new MHashSet[Predicate]
 
   exqs foreach TheoryRegistry.register
@@ -180,7 +259,7 @@ class InstrumentingPreprocessor(
             val newHeadArgs: Seq[ITerm] =
               for ((arg: ITerm, ind: Int) <- clause.head.args.zipWithIndex) yield {
                 ind match {
-                  case i if (instrumentation.headTerms get i).nonEmpty =>
+                  case i if instrumentation.headTerms contains i =>
                     instrumentation.headTerms(i)
                   case _ => arg
                 }
@@ -227,26 +306,8 @@ class InstrumentingPreprocessor(
       }
     }
 
-    val conjsForBranchPred : List[List[(Predicate, Conjunction)]] =
-      (for ((pred, numBranches) <- numBranchesForPred) yield
-          (for (i <- 0 until numBranches)
-            yield ((pred, getConjunctionForBranch(i)))).toList).toList
-
-    def generateSearchSpace(conjs: List[List[(Predicate, Conjunction)]]) :
-      List[List[(Predicate, Conjunction)]] = {
-      conjs match {
-        case hd :: _ =>
-          hd.flatMap(pair => generateSearchSpace(conjs.tail).map(pair :: _))
-        case Nil =>
-          List(Nil)
-      }
-    }
-
-    val searchSpace : Seq[List[(Predicate, Conjunction)]] =
-      generateSearchSpace(conjsForBranchPred)
-
-    val result = InstrumentationResult(
-      newClauses, branchPreds.toSet, searchSpace)
+    val result = new InstrumentationResult(newClauses, branchPreds.toSet,
+                                           numBranchesForPred.toMap)
 
     val translator = new BackTranslator {
       def translate(solution : Solution) = solution -- branchPreds

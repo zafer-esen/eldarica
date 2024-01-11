@@ -55,6 +55,6 @@ class InstrumentationOperatorApplier(clauses          : Clauses,
   private val instrumentingPreprocessor =
     new InstrumentingPreprocessor(clauses, hints, frozenPredicates,
                                   instrumentationOperators.toSet, numGhostRanges)
-  val (InstrumentationResult(instrumentedClauses, branchPredicates, searchSpace),
-        newHints, backTranslator) = instrumentingPreprocessor.process
+  val (instrumentationResult, newHints, backTranslator) =
+    instrumentingPreprocessor.process
 }
